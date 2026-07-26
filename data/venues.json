@@ -1,0 +1,222 @@
+[
+  {
+    "id": "venue-wankhede",
+    "name": "Wankhede Stadium, Mumbai",
+    "avgFirstInningsScore": 178,
+    "avgSecondInningsScore": 162,
+    "pitchType": "batting",
+    "avgBoundaryCount": 28,
+    "tossWinBattingBias": 0.4,
+    "lat": 18.9388,
+    "lon": 72.8258
+  },
+  {
+    "id": "venue-chinnaswamy",
+    "name": "M. Chinnaswamy Stadium, Bengaluru",
+    "avgFirstInningsScore": 185,
+    "avgSecondInningsScore": 168,
+    "pitchType": "batting",
+    "avgBoundaryCount": 30,
+    "tossWinBattingBias": 0.35,
+    "lat": 12.9788,
+    "lon": 77.5996
+  },
+  {
+    "id": "venue-eden-gardens",
+    "name": "Eden Gardens, Kolkata",
+    "avgFirstInningsScore": 172,
+    "avgSecondInningsScore": 158,
+    "pitchType": "balanced",
+    "avgBoundaryCount": 25,
+    "tossWinBattingBias": 0.45,
+    "lat": 22.5646,
+    "lon": 88.3433
+  },
+  {
+    "id": "venue-chepauk",
+    "name": "M. A. Chidambaram Stadium, Chennai",
+    "avgFirstInningsScore": 162,
+    "avgSecondInningsScore": 148,
+    "pitchType": "spin-friendly",
+    "avgBoundaryCount": 20,
+    "tossWinBattingBias": 0.3,
+    "lat": 13.0627,
+    "lon": 80.279
+  },
+  {
+    "id": "venue-arun-jaitley",
+    "name": "Arun Jaitley Stadium, Delhi",
+    "avgFirstInningsScore": 170,
+    "avgSecondInningsScore": 155,
+    "pitchType": "balanced",
+    "avgBoundaryCount": 24,
+    "tossWinBattingBias": 0.4,
+    "lat": 28.6358,
+    "lon": 77.2431
+  },
+  {
+    "id": "venue-narendra-modi",
+    "name": "Narendra Modi Stadium, Ahmedabad",
+    "avgFirstInningsScore": 168,
+    "avgSecondInningsScore": 152,
+    "pitchType": "balanced",
+    "avgBoundaryCount": 23,
+    "tossWinBattingBias": 0.42,
+    "lat": 23.0913,
+    "lon": 72.5972
+  },
+  {
+    "id": "venue-rajiv-gandhi",
+    "name": "Rajiv Gandhi International Stadium, Hyderabad",
+    "avgFirstInningsScore": 175,
+    "avgSecondInningsScore": 160,
+    "pitchType": "batting",
+    "avgBoundaryCount": 27,
+    "tossWinBattingBias": 0.38,
+    "lat": 17.4064,
+    "lon": 78.5511
+  },
+  {
+    "id": "venue-punjab-mullanpur",
+    "name": "Maharaja Yadavindra Singh Stadium, Mullanpur",
+    "avgFirstInningsScore": 174,
+    "avgSecondInningsScore": 159,
+    "pitchType": "batting",
+    "avgBoundaryCount": 26,
+    "tossWinBattingBias": 0.4,
+    "lat": 30.8636,
+    "lon": 76.7241
+  },
+  {
+    "id": "venue-sawai-mansingh",
+    "name": "Sawai Mansingh Stadium, Jaipur",
+    "avgFirstInningsScore": 166,
+    "avgSecondInningsScore": 150,
+    "pitchType": "spin-friendly",
+    "avgBoundaryCount": 21,
+    "tossWinBattingBias": 0.33,
+    "lat": 26.8949,
+    "lon": 75.8064
+  },
+  {
+    "id": "venue-ekana",
+    "name": "Ekana Cricket Stadium, Lucknow",
+    "avgFirstInningsScore": 160,
+    "avgSecondInningsScore": 145,
+    "pitchType": "spin-friendly",
+    "avgBoundaryCount": 19,
+    "tossWinBattingBias": 0.3,
+    "lat": 26.8474,
+    "lon": 80.9469
+  },
+  {
+    "id": "venue-mcg",
+    "name": "Melbourne Cricket Ground (MCG)",
+    "avgFirstInningsScore": 165,
+    "avgSecondInningsScore": 155,
+    "pitchType": "balanced",
+    "avgBoundaryCount": 22,
+    "tossWinBattingBias": 0.35,
+    "lat": -37.8199,
+    "lon": 144.9834
+  },
+  {
+    "id": "venue-scg",
+    "name": "Sydney Cricket Ground (SCG)",
+    "avgFirstInningsScore": 158,
+    "avgSecondInningsScore": 146,
+    "pitchType": "spin-friendly",
+    "avgBoundaryCount": 20,
+    "tossWinBattingBias": 0.32,
+    "lat": -33.8916,
+    "lon": 151.2246
+  },
+  {
+    "id": "venue-optus",
+    "name": "Optus Stadium, Perth",
+    "avgFirstInningsScore": 172,
+    "avgSecondInningsScore": 160,
+    "pitchType": "pace-friendly",
+    "avgBoundaryCount": 24,
+    "tossWinBattingBias": 0.4,
+    "lat": -31.9513,
+    "lon": 115.8892
+  },
+  {
+    "id": "venue-lords",
+    "name": "Lord's Cricket Ground, London",
+    "avgFirstInningsScore": 163,
+    "avgSecondInningsScore": 150,
+    "pitchType": "balanced",
+    "avgBoundaryCount": 21,
+    "tossWinBattingBias": 0.36,
+    "lat": 51.5299,
+    "lon": -0.1725
+  },
+  {
+    "id": "venue-old-trafford",
+    "name": "Old Trafford, Manchester",
+    "avgFirstInningsScore": 159,
+    "avgSecondInningsScore": 148,
+    "pitchType": "pace-friendly",
+    "avgBoundaryCount": 19,
+    "tossWinBattingBias": 0.34,
+    "lat": 53.4568,
+    "lon": -2.2913
+  },
+  {
+    "id": "venue-newlands",
+    "name": "Newlands, Cape Town",
+    "avgFirstInningsScore": 170,
+    "avgSecondInningsScore": 158,
+    "pitchType": "pace-friendly",
+    "avgBoundaryCount": 23,
+    "tossWinBattingBias": 0.37,
+    "lat": -33.9711,
+    "lon": 18.4319
+  },
+  {
+    "id": "venue-wanderers",
+    "name": "The Wanderers Stadium, Johannesburg",
+    "avgFirstInningsScore": 176,
+    "avgSecondInningsScore": 162,
+    "pitchType": "batting",
+    "avgBoundaryCount": 27,
+    "tossWinBattingBias": 0.39,
+    "lat": -26.1866,
+    "lon": 28.0577
+  },
+  {
+    "id": "venue-dubai",
+    "name": "Dubai International Cricket Stadium",
+    "avgFirstInningsScore": 155,
+    "avgSecondInningsScore": 140,
+    "pitchType": "bowling",
+    "avgBoundaryCount": 17,
+    "tossWinBattingBias": 0.28,
+    "lat": 25.0463,
+    "lon": 55.2216
+  },
+  {
+    "id": "venue-national-karachi",
+    "name": "National Stadium, Karachi",
+    "avgFirstInningsScore": 168,
+    "avgSecondInningsScore": 154,
+    "pitchType": "balanced",
+    "avgBoundaryCount": 22,
+    "tossWinBattingBias": 0.36,
+    "lat": 24.8934,
+    "lon": 67.0693
+  },
+  {
+    "id": "venue-r-premadasa",
+    "name": "R. Premadasa Stadium, Colombo",
+    "avgFirstInningsScore": 157,
+    "avgSecondInningsScore": 143,
+    "pitchType": "spin-friendly",
+    "avgBoundaryCount": 18,
+    "tossWinBattingBias": 0.29,
+    "lat": 6.927,
+    "lon": 79.8721
+  }
+]

@@ -1,0 +1,475 @@
+import type { Player } from "@/lib/cricket-api/types";
+import {
+  DEFAULT_WEIGHTS,
+  ROLE_CONSTRAINTS,
+  type PlayerScoreBreakdown,
+  type PredictedTeamResult,
+  type PredictorInput,
+  type PredictorWeights,
+  type ScoredPlayer,
+} from "./types";
+
+function average(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+function minMaxNormalize(values: number[]): number[] {
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (max === min) return values.map(() => 0.5);
+  return values.map((v) => (v - min) / (max - min));
+}
+
+function recentFormRaw(player: Player): number {
+  return average(player.recentForm.map((f) => f.fantasyPoints));
+}
+
+/**
+ * How reliable a player's recent form actually is, not just its average
+ * — a player scoring 20/20/20/20/20 and one scoring 0/0/0/0/100 have
+ * identical averages but very different risk profiles. Uses inverse
+ * coefficient of variation (stdDev/mean), mapped to (0, 1], higher =
+ * more consistent. Returns a neutral 0.5 with fewer than 2 data points
+ * or a non-positive mean — not enough signal to judge consistency
+ * either way, honest neutral rather than a fabricated read.
+ */
+function recentFormConsistency(player: Player): number {
+  const points = player.recentForm.map((f) => f.fantasyPoints);
+  if (points.length < 2) return 0.5;
+  const mean = average(points);
+  if (mean <= 0) return 0.5;
+  const variance = average(points.map((p) => (p - mean) ** 2));
+  const stdDev = Math.sqrt(variance);
+  const coefficientOfVariation = stdDev / mean;
+  return 1 / (1 + coefficientOfVariation);
+}
+
+/**
+ * A player's single best recent performance — used only for
+ * captain/vice-captain tie-breaking (see pickCaptainAndViceCaptain),
+ * where upside genuinely matters more than average, since the
+ * captain's points get doubled. Returns 0 with no recent data, which
+ * naturally deprioritizes them for a ceiling-based tie-break without
+ * excluding them from the team itself.
+ */
+function recentFormCeiling(player: Player): number {
+  if (player.recentForm.length === 0) return 0;
+  return Math.max(...player.recentForm.map((f) => f.fantasyPoints));
+}
+
+function venueFitRaw(player: Player, input: PredictorInput): number {
+  const hint = input.venueHints?.find((h) => h.playerId === player.id);
+  if (hint) return hint.average * 0.6 + hint.strikeRate * 0.4;
+
+  // No historical venue data for this player: fall back to a neutral
+  // score derived from the venue's overall scoring profile so batting-
+  // friendly venues still nudge batters/all-rounders up a little.
+  if (!input.venue) return 50;
+  const pitchBonus: Record<string, Partial<Record<Player["role"], number>>> = {
+    batting: { BAT: 10, AR: 5, WK: 8, BOWL: -5 },
+    bowling: { BOWL: 10, AR: 5, BAT: -5, WK: -3 },
+    "spin-friendly": { BOWL: 6, AR: 3 },
+    "pace-friendly": { BOWL: 6, AR: 3 },
+    balanced: {},
+  };
+  const bonus = pitchBonus[input.venue.pitchType]?.[player.role] ?? 0;
+  return input.venue.avgFirstInningsScore / 10 + bonus;
+}
+
+/**
+ * Aggregate real recent bowling/batting strength for one team, from
+ * accumulated recentForm data — average fantasy points among that
+ * team's players in the given role group, counting only players who
+ * actually have accumulated match history. Returns 0 (honest "no
+ * signal yet") if nobody in that role group has any recentForm data.
+ */
+function computeTeamStrength(players: Player[], teamId: string, roles: Player["role"][]): number {
+  const relevant = players.filter(
+    (p) => p.teamId === teamId && roles.includes(p.role) && p.recentForm.length > 0,
+  );
+  if (relevant.length === 0) return 0;
+  return average(relevant.map((p) => average(p.recentForm.map((f) => f.fantasyPoints))));
+}
+
+/**
+ * Matchup-specific adjustment, not just generic conditions: a batter
+ * facing a team whose bowlers have genuinely been strong recently
+ * (real accumulated recentForm data) faces a tougher matchup than one
+ * facing a weaker attack — even under identical weather/pitch. Same
+ * idea in reverse for bowlers against strong/weak opposing batting.
+ * All-rounders get a smaller, blended adjustment either way. Falls
+ * back to real per-player head-to-head data if that's ever populated
+ * (it currently isn't, at this API tier), then to the player's own
+ * damped recent form if there's no data on the opposition at all yet —
+ * same honest-neutral pattern used everywhere else in this file.
+ */
+function headToHeadRaw(
+  player: Player,
+  input: PredictorInput,
+  bowlingStrengthByTeam: Map<string, number>,
+  battingStrengthByTeam: Map<string, number>,
+): number {
+  const hint = input.headToHeadHints?.find((h) => h.playerId === player.id);
+  if (hint) return hint.fantasyPointsAvg;
+
+  const ownForm = recentFormRaw(player) * 0.8;
+  const opponentTeamId = input.players.find((p) => p.teamId !== player.teamId)?.teamId;
+  if (!opponentTeamId) return ownForm;
+
+  const oppBowling = bowlingStrengthByTeam.get(opponentTeamId) ?? 0;
+  const oppBatting = battingStrengthByTeam.get(opponentTeamId) ?? 0;
+  if (oppBowling === 0 && oppBatting === 0) return ownForm; // no accumulated data on this opponent yet
+
+  if (player.role === "BAT" || player.role === "WK") {
+    return ownForm - oppBowling * 0.3; // stronger opposing bowling => tougher matchup
+  }
+  if (player.role === "BOWL") {
+    return ownForm - oppBatting * 0.2; // stronger opposing batting => harder to contain/dismiss
+  }
+  // AR: smaller, blended effect from both sides of the matchup.
+  return ownForm - (oppBowling * 0.15 + oppBatting * 0.1) / 2;
+}
+
+/**
+ * Rule-based, not AI — a real forecast (fetched by the caller and passed
+ * in via input.weather) nudges role fit: high humidity or an
+ * overcast/rainy forecast favors bowlers (more seam/swing assistance in
+ * practice); clear, dry conditions favor batters. This is a simplified
+ * heuristic, not a meteorological or cricket-analytics model — treat the
+ * bonus/penalty as directional, not precise. Returns a neutral 50 (same
+ * for every player, so it has zero effect on relative ranking) when no
+ * forecast is available, same graceful-degradation pattern as venue fit.
+ */
+function weatherFitRaw(player: Player, input: PredictorInput): number {
+  const weather = input.weather;
+  if (!weather) return 50;
+
+  const overcastOrWet = /cloud|overcast|rain|drizzle|shower/i.test(weather.condition);
+  const bowlerFriendly = weather.humidityPct > 70 || overcastOrWet;
+  const batterFriendly = weather.humidityPct < 40 && !overcastOrWet;
+
+  const bonus: Partial<Record<Player["role"], number>> = bowlerFriendly
+    ? { BOWL: 10, AR: 5, BAT: -5, WK: -3 }
+    : batterFriendly
+      ? { BAT: 8, AR: 4, WK: 5, BOWL: -4 }
+      : {};
+
+  return 50 + (bonus[player.role] ?? 0);
+}
+
+function reasonFor(player: Player, breakdown: Omit<PlayerScoreBreakdown, "reason">): string {
+  const parts: string[] = [];
+  const form = player.recentForm;
+  const fifties = form.filter((f) => (f.runsScored ?? 0) >= 50).length;
+  const wickets = form.reduce((sum, f) => sum + (f.wicketsTaken ?? 0), 0);
+
+  if (fifties > 0) parts.push(`In-form: ${fifties} fifty${fifties > 1 ? "s" : ""} in last ${form.length} innings`);
+  if (wickets > 0) parts.push(`${wickets} wickets in last ${form.length} matches`);
+  if (breakdown.venueScore > 0.65) parts.push("Strong fit for this venue's conditions");
+  if (breakdown.weatherScore > 0.65) parts.push("Favorable conditions in today's forecast");
+  if (breakdown.headToHeadScore > 0.65) parts.push("Favorable matchup against this opposition");
+  if (breakdown.headToHeadScore < 0.35) parts.push("Facing a strong opposition attack this match");
+  if (breakdown.valueScore > 0.65) parts.push("Good value for the credit cost");
+  if (parts.length === 0) parts.push("Solid all-round composite score");
+
+  return parts.join(" · ");
+}
+
+export function computePlayerScores(input: PredictorInput): ScoredPlayer[] {
+  const weights: PredictorWeights = { ...DEFAULT_WEIGHTS, ...input.weights };
+  const { players } = input;
+
+  const teamIds = Array.from(new Set(players.map((p) => p.teamId)));
+  const bowlingStrengthByTeam = new Map(
+    teamIds.map((id) => [id, computeTeamStrength(players, id, ["BOWL", "AR"])]),
+  );
+  const battingStrengthByTeam = new Map(
+    teamIds.map((id) => [id, computeTeamStrength(players, id, ["BAT", "WK", "AR"])]),
+  );
+
+  // Consistency modifies form directly (not a separate weighted pillar
+  // — that would mean rebalancing all 5 tuned weights again for what's
+  // really a reliability adjustment on ONE of them). Kept deliberately
+  // mild (0.85-1.15x) so it nudges rather than dominates: a wildly
+  // inconsistent player doesn't get wiped out, a very consistent one
+  // doesn't get an outsized boost either.
+  const formRaw = players.map((p) => recentFormRaw(p) * (0.85 + 0.3 * recentFormConsistency(p)));
+  const venueRaw = players.map((p) => venueFitRaw(p, input));
+  const h2hRaw = players.map((p) => headToHeadRaw(p, input, bowlingStrengthByTeam, battingStrengthByTeam));
+  const weatherRaw = players.map((p) => weatherFitRaw(p, input));
+
+  const formNorm = minMaxNormalize(formRaw);
+  const venueNorm = minMaxNormalize(venueRaw);
+  const h2hNorm = minMaxNormalize(h2hRaw);
+  const weatherNorm = minMaxNormalize(weatherRaw);
+
+  // Value depends on form+venue+h2h+weather, so compute it in a second
+  // pass once those are normalized, then normalize value itself across
+  // the pool.
+  const preValue = players.map(
+    (_, i) =>
+      (formNorm[i] * weights.form +
+        venueNorm[i] * weights.venue +
+        h2hNorm[i] * weights.headToHead +
+        weatherNorm[i] * weights.weather) /
+      players[i].credits,
+  );
+  const valueNorm = minMaxNormalize(preValue);
+
+  return players.map((player, i) => {
+    const rawComposite =
+      weights.form * formNorm[i] +
+      weights.venue * venueNorm[i] +
+      weights.headToHead * h2hNorm[i] +
+      weights.value * valueNorm[i] +
+      weights.weather * weatherNorm[i];
+
+    // Team win-rate: a mild post-hoc nudge, not a full weighted pillar
+    // (deliberately kept small — this is a tie-breaker signal, not a
+    // primary driver, and rebalancing all 5 tuned weights again for it
+    // would be disproportionate to what it actually represents). No
+    // adjustment at all if there's no accumulated data for this team yet.
+    const winRate = input.teamWinRates?.[player.teamId];
+    const composite = winRate != null ? rawComposite * (0.95 + 0.1 * winRate) : rawComposite;
+
+    const breakdown: Omit<PlayerScoreBreakdown, "reason"> = {
+      playerId: player.id,
+      formScore: formNorm[i],
+      venueScore: venueNorm[i],
+      headToHeadScore: h2hNorm[i],
+      valueScore: valueNorm[i],
+      weatherScore: weatherNorm[i],
+      composite,
+    };
+
+    return {
+      ...player,
+      score: { ...breakdown, reason: reasonFor(player, breakdown) },
+    };
+  });
+}
+
+interface RoleCounts {
+  BAT: number;
+  BOWL: number;
+  AR: number;
+  WK: number;
+}
+
+function countRoles(team: ScoredPlayer[]): RoleCounts {
+  const counts: RoleCounts = { BAT: 0, BOWL: 0, AR: 0, WK: 0 };
+  for (const p of team) counts[p.role]++;
+  return counts;
+}
+
+function countPerTeam(team: ScoredPlayer[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const p of team) counts.set(p.teamId, (counts.get(p.teamId) ?? 0) + 1);
+  return counts;
+}
+
+function remainingSlotsRespected(team: ScoredPlayer[], candidate: ScoredPlayer): boolean {
+  const roles = countRoles(team);
+  const perTeam = countPerTeam(team);
+  const c = ROLE_CONSTRAINTS;
+
+  if (team.length >= c.teamSize) return false;
+  if (roles[candidate.role] + 1 > (candidate.role === "BAT" ? c.maxBatsmen : candidate.role === "BOWL" ? c.maxBowlers : candidate.role === "AR" ? c.maxAllRounders : c.maxWicketkeepers)) {
+    return false;
+  }
+  if ((perTeam.get(candidate.teamId) ?? 0) + 1 > c.maxPerTeam) return false;
+  return true;
+}
+
+function unmetMinimums(team: ScoredPlayer[]): number {
+  const roles = countRoles(team);
+  const c = ROLE_CONSTRAINTS;
+  const slotsLeft = c.teamSize - team.length;
+  const deficits = [
+    Math.max(0, c.minBatsmen - roles.BAT),
+    Math.max(0, c.minBowlers - roles.BOWL),
+    Math.max(0, c.minAllRounders - roles.AR),
+    Math.max(0, c.minWicketkeepers - roles.WK),
+  ];
+  const totalDeficit = deficits.reduce((a, b) => a + b, 0);
+  return totalDeficit > slotsLeft ? totalDeficit - slotsLeft : 0;
+}
+
+/**
+ * Greedy-with-backtracking selection: repeatedly take the highest-composite
+ * remaining player that keeps role minimums reachable and doesn't breach the
+ * credit cap / max-per-team / role-maximum constraints. Not a perfectly
+ * optimal knapsack solve, but simple, fast, and good enough for 22-30 player
+ * pools where near-optimal is what matters, not globally optimal.
+ */
+export function selectTeam(scoredPlayers: ScoredPlayer[], creditCap = ROLE_CONSTRAINTS.creditCap): ScoredPlayer[] {
+  const sorted = [...scoredPlayers].sort((a, b) => b.score.composite - a.score.composite);
+  const team: ScoredPlayer[] = [];
+  let creditsUsed = 0;
+
+  const tryAdd = (pool: ScoredPlayer[], requireMinimumsReachable: boolean) => {
+    for (const candidate of pool) {
+      if (team.some((p) => p.id === candidate.id)) continue;
+      if (creditsUsed + candidate.credits > creditCap) continue;
+      if (!remainingSlotsRespected(team, candidate)) continue;
+
+      team.push(candidate);
+      creditsUsed += candidate.credits;
+
+      if (requireMinimumsReachable && unmetMinimums(team) > 0) {
+        // Adding this player makes the remaining minimums unreachable
+        // within the slots left — undo and keep searching.
+        team.pop();
+        creditsUsed -= candidate.credits;
+        continue;
+      }
+    }
+  };
+
+  // Pass 1: fill greedily by composite score while keeping role minimums reachable.
+  tryAdd(sorted, true);
+
+  // Pass 2: if minimums are still unmet (pool too thin), relax the reachability
+  // check and force-fill by role priority, cheapest-first, to hit 11 players.
+  if (team.length < ROLE_CONSTRAINTS.teamSize || unmetMinimums(team) > 0) {
+    const remaining = sorted.filter((p) => !team.some((t) => t.id === p.id));
+    const cheapestFirst = [...remaining].sort((a, b) => a.credits - b.credits);
+    tryAdd(cheapestFirst, false);
+  }
+
+  return team;
+}
+
+const MIN_RECENT_APPEARANCES = 1;
+
+/**
+ * Narrows the full squad down to players with at least one real recent
+ * match appearance (from the accumulated match-log data already
+ * attached to player.recentForm during squad caching) — an honest,
+ * data-driven stand-in for "who's actually likely to play," since this
+ * app's data source has no confirmed pre-match lineup endpoint.
+ *
+ * Falls back to the FULL squad — never excludes anyone — if either:
+ *   (a) fewer than 11 players clear the appearance bar (recentForm data
+ *       is still thin, e.g. early in the accumulator's life), or
+ *   (b) the filtered pool can't satisfy minimum role requirements (e.g.
+ *       enough recently-tracked players exist, but none of them happen
+ *       to be a wicketkeeper) — selecting a team is impossible without
+ *       the excluded players in that case, so excluding them would be
+ *       actively harmful, not just imprecise.
+ */
+export function filterLikelyXI(players: Player[]): Player[] {
+  const withRecentAppearance = players.filter((p) => p.recentForm.length >= MIN_RECENT_APPEARANCES);
+  if (withRecentAppearance.length < ROLE_CONSTRAINTS.teamSize) return players;
+
+  const countByRole = (role: Player["role"]) => withRecentAppearance.filter((p) => p.role === role).length;
+  const hasEnoughOfEachRole =
+    countByRole("WK") >= ROLE_CONSTRAINTS.minWicketkeepers &&
+    countByRole("BAT") >= ROLE_CONSTRAINTS.minBatsmen &&
+    countByRole("BOWL") >= ROLE_CONSTRAINTS.minBowlers &&
+    countByRole("AR") >= ROLE_CONSTRAINTS.minAllRounders;
+
+  return hasEnoughOfEachRole ? withRecentAppearance : players;
+}
+
+/**
+ * How close a non-selected player's miss actually was, relative to the
+ * weakest selected player in the same role — the actual competitive
+ * cutoff for that role slot. Handles an honest edge case: selectTeam
+ * isn't simple top-N-by-score (it's credit-cap and per-team-limit
+ * constrained), so a non-selected player can genuinely score as well as
+ * or better than a selected one in the same role and still miss out —
+ * that's a budget/limit reason, not a ranking one, and gets labeled
+ * accordingly rather than misleadingly implying they were "close."
+ */
+export function proximityNote(playerComposite: number, selectedSameRole: ScoredPlayer[]): string | null {
+  if (selectedSameRole.length === 0) return null;
+  const weakestSelected = Math.min(...selectedSameRole.map((p) => p.score.composite));
+  const gap = weakestSelected - playerComposite;
+
+  if (gap <= 0) {
+    return "Scored as well as or better than a selected player in this role — likely missed out due to the credit cap or per-team player limit, not raw ranking";
+  }
+  if (gap < 0.08) return "Very close miss — just below the selected picks in this role";
+  if (gap < 0.2) return "Ranked moderately behind the selected picks in this role";
+  return "Ranked well behind the selected picks in this role";
+}
+
+const CAPTAIN_TIE_THRESHOLD = 0.1;
+
+/**
+ * Captain is normally just the highest composite scorer — but when
+ * multiple players are close (within CAPTAIN_TIE_THRESHOLD composite
+ * units), ceiling (best single recent performance) breaks the tie
+ * instead of raw rank order. This matters specifically for captain
+ * because their points get doubled — a genuinely higher-upside player
+ * is worth preferring over a marginally-higher-average one once
+ * they're already close. Vice-captain stays simple (next-best
+ * composite, excluding whoever became captain) — this tie-break is
+ * deliberately only applied to the single highest-leverage slot.
+ */
+function pickCaptainAndViceCaptain(team: ScoredPlayer[]): { captainId: string; viceCaptainId: string } {
+  const ranked = [...team].sort((a, b) => b.score.composite - a.score.composite);
+  if (ranked.length === 0) return { captainId: "", viceCaptainId: "" };
+
+  const topComposite = ranked[0].score.composite;
+  const contenders = ranked.filter((p) => topComposite - p.score.composite <= CAPTAIN_TIE_THRESHOLD);
+  const captain = [...contenders].sort((a, b) => recentFormCeiling(b) - recentFormCeiling(a))[0] ?? ranked[0];
+
+  const viceCaptain = ranked.find((p) => p.id !== captain.id) ?? ranked[0];
+  return { captainId: captain.id, viceCaptainId: viceCaptain.id };
+}
+
+export function predictTeam(input: PredictorInput): PredictedTeamResult {
+  const likelyPlayers = filterLikelyXI(input.players);
+  const usedLikelyXIFilter = likelyPlayers.length !== input.players.length;
+
+  const scored = computePlayerScores({ ...input, players: likelyPlayers });
+  const team = selectTeam(scored);
+  const { captainId, viceCaptainId } = pickCaptainAndViceCaptain(team);
+
+  const selectedIds = new Set(team.map((p) => p.id));
+  const scoredNotSelected = scored
+    .filter((p) => !selectedIds.has(p.id))
+    .sort((a, b) => b.score.composite - a.score.composite)
+    .map((p) => {
+      const sameRoleSelected = team.filter((t) => t.role === p.role);
+      const note = proximityNote(p.score.composite, sameRoleSelected);
+      return note ? { ...p, score: { ...p.score, reason: `${p.score.reason} · ${note}` } } : p;
+    });
+
+  // Players excluded by the Likely XI filter itself (zero recent
+  // appearances) never went through scoring at all — without this,
+  // they'd be invisible in BOTH the selected team and notSelected,
+  // which defeats the point if you're specifically looking up a real
+  // playing-11 player who happens to have thin accumulated data.
+  const likelyIds = new Set(likelyPlayers.map((p) => p.id));
+  const filteredOutPlayers: ScoredPlayer[] = usedLikelyXIFilter
+    ? input.players
+        .filter((p) => !likelyIds.has(p.id))
+        .map((p) => ({
+          ...p,
+          score: {
+            playerId: p.id,
+            formScore: 0,
+            venueScore: 0,
+            headToHeadScore: 0,
+            valueScore: 0,
+            weatherScore: 0,
+            composite: 0,
+            reason: "Not enough recent match data yet to be considered — not ranked against the rest of the squad.",
+          },
+        }))
+    : [];
+
+  return {
+    players: team,
+    captainId,
+    viceCaptainId,
+    totalCredits: team.reduce((sum, p) => sum + p.credits, 0),
+    totalScore: team.reduce((sum, p) => sum + p.score.composite, 0),
+    usedLikelyXIFilter,
+    notSelected: [...scoredNotSelected, ...filteredOutPlayers],
+  };
+}
