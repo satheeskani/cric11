@@ -100,5 +100,5 @@ export const ROLE_CONSTRAINTS = {
   maxAllRounders: 4,
   teamSize: 11,
   creditCap: 100,
-  maxPerTeam: 7,
+  maxPerTeam: 10,
 };

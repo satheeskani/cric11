@@ -11,6 +11,7 @@ import {
 } from "@/lib/db/player-match-logs";
 import { saveVenueLog } from "@/lib/db/venue-match-logs";
 import { saveTeamLog } from "@/lib/db/team-match-logs";
+import { parseBowlerFromDismissal, matchBowlerNameToId, saveMatchupLog } from "@/lib/db/player-matchup-logs";
 
 function resultForTeam(teamName: string, status: string): "W" | "L" | "NR" {
   const s = status.toLowerCase();
@@ -32,7 +33,9 @@ function buildMatchLogEntries(
     const opponent = battingTeam === match.team1Name ? match.team2Name : match.team1Name;
     const result = resultForTeam(battingTeam, match.status);
 
-    for (const b of innings.batsman ?? []) {
+    const battingOrder = innings.batsman ?? [];
+    for (let idx = 0; idx < battingOrder.length; idx++) {
+      const b = battingOrder[idx];
       entries.push({
         playerId: String(b.id),
         matchId: match.matchId,
@@ -42,6 +45,7 @@ function buildMatchLogEntries(
         runsScored: b.runs,
         fantasyPoints: estimateBattingPoints(b.runs, b.fours, b.sixes),
         seriesName: match.seriesName,
+        battingPosition: idx + 1,
       });
     }
     for (const bw of innings.bowler ?? []) {
@@ -58,6 +62,38 @@ function buildMatchLogEntries(
     }
   }
   return entries;
+}
+
+/**
+ * Extracts real dismissal-vs-bowler data from the SAME scorecard the
+ * player/venue accumulators already fetched — zero extra API cost.
+ * Uses each innings' own batsman[]/bowler[] pairing (a batting team's
+ * dismissals are always credited to that same innings' bowler list, no
+ * cross-innings matching needed). Skips any dismissal text that doesn't
+ * parse (not outs, run outs, anything unparseable) rather than guessing.
+ */
+async function saveMatchupLogsFromScorecard(scorecard: any, matchId: string): Promise<number> {
+  const date = new Date().toISOString();
+  let saved = 0;
+
+  for (const innings of scorecard.scorecard ?? []) {
+    const bowlers = (innings.bowler ?? []).map((bw: any) => ({ id: String(bw.id), name: bw.name as string }));
+
+    for (const b of innings.batsman ?? []) {
+      const outdec = b.outdec as string | undefined;
+      if (!outdec) continue;
+
+      const bowlerName = parseBowlerFromDismissal(outdec);
+      if (!bowlerName) continue; // not out, run out, or unparseable — correctly skipped, not an error
+
+      const bowlerId = matchBowlerNameToId(bowlerName, bowlers);
+      if (!bowlerId) continue; // couldn't confidently match to a real player — skip rather than guess
+
+      await saveMatchupLog({ batterId: String(b.id), bowlerId, matchId, date });
+      saved++;
+    }
+  }
+  return saved;
 }
 
 /**
@@ -150,9 +186,29 @@ export async function GET(req: Request) {
   for (const match of upcoming) {
     try {
       const squad = await provider.getSquad(match.id);
-      const { getRecentFormForSeries } = await import("@/lib/db/player-match-logs");
+      const { getRecentFormForSeries, getTypicalBattingPosition } = await import("@/lib/db/player-match-logs");
+      const { getMatchupConcerns } = await import("@/lib/db/player-matchup-logs");
+
+      const teamABowlers = squad.teamA
+        .filter((p) => p.role === "BOWL" || p.role === "AR")
+        .map((p) => ({ id: p.id, name: p.name }));
+      const teamBBowlers = squad.teamB
+        .filter((p) => p.role === "BOWL" || p.role === "AR")
+        .map((p) => ({ id: p.id, name: p.name }));
+
       for (const player of [...squad.teamA, ...squad.teamB]) {
         player.recentForm = await getRecentFormForSeries(player.id, match.seriesName, 5);
+        const typicalPosition = await getTypicalBattingPosition(player.id);
+        if (typicalPosition != null) player.typicalBattingPosition = typicalPosition;
+
+        // Real player-vs-player dismissal history against TODAY's actual
+        // opposing bowlers — only meaningful for batters (BAT/WK/AR).
+        if (player.role === "BAT" || player.role === "WK" || player.role === "AR") {
+          const isTeamA = squad.teamA.some((p) => p.id === player.id);
+          const opposingBowlers = isTeamA ? teamBBowlers : teamABowlers;
+          const concerns = await getMatchupConcerns(player.id, opposingBowlers);
+          if (concerns.length > 0) player.matchupConcerns = concerns;
+        }
       }
       squadsByMatchId.set(match.id, squad);
       await setCacheEntry(`squad:${match.id}`, squad);
@@ -235,6 +291,10 @@ export async function GET(req: Request) {
           // already in `m` from getRecentCompletedMatches.
           await saveTeamLogsFromMatch(m);
 
+          // Player-vs-player dismissals: zero extra cost, parsed from
+          // the same scorecard's outdec field.
+          const matchupsSaved = await saveMatchupLogsFromScorecard(scorecard, m.matchId);
+
           // Toss bias: a genuinely separate API call (see
           // getMatchTossInfo's doc comment). Wrapped in its own
           // try/catch so a failure here doesn't lose the player/team
@@ -261,7 +321,7 @@ export async function GET(req: Request) {
 
           await markMatchProcessed(m.matchId);
           log.push(
-            `match log ${m.matchId}: saved ${entries.length} player entries + venue log + team log` +
+            `match log ${m.matchId}: saved ${entries.length} player entries + venue log + team log + ${matchupsSaved} matchups` +
               (tossDecision ? " + toss info" : ""),
           );
         } catch (err) {

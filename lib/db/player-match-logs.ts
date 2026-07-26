@@ -20,6 +20,11 @@ export interface PlayerMatchLog {
    * quality, different format nuances even within T20). Optional since
    * older logs saved before this field existed won't have it. */
   seriesName?: string;
+  /** 1-based position in the batting order for this match (1 = opener),
+   * from the scorecard's batsman array — real historical data, only
+   * present for players who actually batted. Bowlers who didn't bat, or
+   * matches logged before this field existed, won't have it. */
+  battingPosition?: number;
 }
 
 /**
@@ -137,4 +142,30 @@ export async function getRecentFormForSeries(
     wicketsTaken: d.wicketsTaken,
     fantasyPoints: d.fantasyPoints,
   }));
+}
+
+const BATTING_POSITION_SAMPLE_SIZE = 5;
+
+/**
+ * Average recent batting position, rounded to the nearest whole
+ * position — real historical tendency, informational only (see the
+ * doc comment on Player.typicalBattingPosition for why this
+ * deliberately isn't used as a scoring input). Returns null until at
+ * least one match with a logged batting position exists for this
+ * player — honest "no data yet", not a fabricated guess.
+ */
+export async function getTypicalBattingPosition(playerId: string): Promise<number | null> {
+  if (!isMongoConfigured()) return null;
+  const db = await getDb();
+  const docs = await db
+    .collection<PlayerMatchLog>(COLLECTION)
+    .find({ playerId, battingPosition: { $exists: true } })
+    .sort({ date: -1 })
+    .limit(BATTING_POSITION_SAMPLE_SIZE)
+    .toArray();
+
+  const positions = docs.map((d) => d.battingPosition).filter((p): p is number => p != null);
+  if (positions.length === 0) return null;
+
+  return Math.round(positions.reduce((a, b) => a + b, 0) / positions.length);
 }

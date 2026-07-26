@@ -171,6 +171,27 @@ function reasonFor(player: Player, breakdown: Omit<PlayerScoreBreakdown, "reason
   if (breakdown.headToHeadScore > 0.65) parts.push("Favorable matchup against this opposition");
   if (breakdown.headToHeadScore < 0.35) parts.push("Facing a strong opposition attack this match");
   if (breakdown.valueScore > 0.65) parts.push("Good value for the credit cost");
+
+  // Informational only — historical tendency, not today's confirmed
+  // order, and deliberately excluded from the composite score (see
+  // Player.typicalBattingPosition's doc comment for why).
+  const pos = player.typicalBattingPosition;
+  if (pos != null && (player.role === "BAT" || player.role === "WK" || player.role === "AR")) {
+    if (pos <= 2) parts.push("Typically opens the batting");
+    else if (pos <= 4) parts.push("Typically bats in the top order");
+    else if (pos <= 7) parts.push("Typically bats in the middle order");
+    else parts.push("Typically bats late in the order");
+  }
+
+  // Real player-vs-player dismissal history against TODAY's actual
+  // opponent — informational only, same reasoning as batting position:
+  // counts dismissals, not a true faced-vs-dismissed rate, so it's a
+  // real caution rather than a score-moving statistic.
+  const concern = player.matchupConcerns?.[0];
+  if (concern) {
+    parts.push(`Dismissed by ${concern.bowlerName} ${concern.dismissals} times recently`);
+  }
+
   if (parts.length === 0) parts.push("Solid all-round composite score");
 
   return parts.join(" · ");

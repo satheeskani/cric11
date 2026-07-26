@@ -125,6 +125,47 @@ describe("team win-rate nudge", () => {
   });
 });
 
+describe("matchup concerns (informational, not scoring)", () => {
+  it("adds a dismissal-history note to reasoning without changing the composite score", () => {
+    const struggler = makePlayer({
+      id: "struggler-1",
+      role: "BAT",
+      teamId: "A",
+      matchupConcerns: [{ bowlerId: "b1", bowlerName: "Muzarabani", dismissals: 2 }],
+    });
+    const noConcernData = makePlayer({ id: "no-concern-1", role: "BAT", teamId: "A" });
+
+    const scored = computePlayerScores({ players: [struggler, noConcernData], venue: null });
+    const strugglerResult = scored.find((p) => p.id === "struggler-1")!;
+    const noConcernResult = scored.find((p) => p.id === "no-concern-1")!;
+
+    expect(strugglerResult.score.reason).toContain("Dismissed by Muzarabani 2 times recently");
+    expect(strugglerResult.score.composite).toBeCloseTo(noConcernResult.score.composite, 5);
+  });
+});
+
+describe("typical batting position (informational, not scoring)", () => {
+  it("adds an opener note to reasoning without changing the composite score", () => {
+    const opener = makePlayer({ id: "opener-1", role: "BAT", teamId: "A", typicalBattingPosition: 1 });
+    const noPositionData = makePlayer({ id: "no-data-1", role: "BAT", teamId: "A" });
+
+    const scored = computePlayerScores({ players: [opener, noPositionData], venue: null });
+    const openerResult = scored.find((p) => p.id === "opener-1")!;
+    const noDataResult = scored.find((p) => p.id === "no-data-1")!;
+
+    expect(openerResult.score.reason).toContain("Typically opens the batting");
+    // Identical inputs otherwise (same role, team, recentForm) — composite
+    // must be unaffected by batting position, since it's informational only.
+    expect(openerResult.score.composite).toBeCloseTo(noDataResult.score.composite, 5);
+  });
+
+  it("does not add a batting-position note for bowlers, where it isn't meaningful", () => {
+    const bowlerWithPosition = makePlayer({ id: "bowl-pos-1", role: "BOWL", teamId: "A", typicalBattingPosition: 9 });
+    const scored = computePlayerScores({ players: [bowlerWithPosition], venue: null });
+    expect(scored[0].score.reason).not.toContain("bats");
+  });
+});
+
 describe("weather scoring", () => {
   it("gives bowlers a higher weather score than batters in humid/overcast conditions", () => {
     const bowler = makePlayer({ id: "bowl-1", role: "BOWL", teamId: "A" });
@@ -217,7 +258,7 @@ describe("selectTeam constraints", () => {
     expect(bowlCount).toBeGreaterThanOrEqual(ROLE_CONSTRAINTS.minBowlers);
   });
 
-  it("never picks more than 7 players from one team", () => {
+  it("never picks more than the max-per-team limit from one team", () => {
     const scored = computePlayerScores({ players: buildPool(), venue: null });
     const team = selectTeam(scored);
     const perTeam = new Map<string, number>();

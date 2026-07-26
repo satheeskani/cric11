@@ -46,6 +46,28 @@ export interface Player {
   bowlingStyle?: string;
   credits: number;
   recentForm: RecentFormEntry[];
+  /**
+   * Average batting position (1 = opener) from recent accumulated
+   * scorecards — real historical tendency, NOT today's confirmed order
+   * (this API tier has no live pre-match batting order, same root
+   * limitation as the lineup problem). Informational only: shown in
+   * scoring reasoning text, deliberately NOT used as a scoring input,
+   * since batting order is genuinely unstable match-to-match (teams
+   * reshuffle based on situation) — too weak a signal to let it move
+   * who gets picked. Undefined until enough data has accumulated.
+   */
+  typicalBattingPosition?: number;
+  /**
+   * Real specific bowlers from the CURRENT match's opposing team who
+   * have dismissed this batter multiple times recently (parsed from
+   * real scorecard dismissal text — see lib/db/player-matchup-logs.ts).
+   * Informational only, same reasoning as typicalBattingPosition: this
+   * counts dismissals, not a true faced-vs-dismissed rate (that data
+   * doesn't exist in the scorecards fetched here), so it's too
+   * uncertain a signal to safely move the composite score — shown in
+   * reasoning text as a real, specific caution instead.
+   */
+  matchupConcerns?: { bowlerId: string; bowlerName: string; dismissals: number }[];
 }
 
 export interface HeadToHeadRecord {
