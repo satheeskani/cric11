@@ -186,30 +186,8 @@ export async function GET(req: Request) {
   for (const match of upcoming) {
     try {
       const squad = await provider.getSquad(match.id);
-      const { getRecentFormForSeries, getTypicalBattingPosition } = await import("@/lib/db/player-match-logs");
-      const { getMatchupConcerns } = await import("@/lib/db/player-matchup-logs");
-
-      const teamABowlers = squad.teamA
-        .filter((p) => p.role === "BOWL" || p.role === "AR")
-        .map((p) => ({ id: p.id, name: p.name }));
-      const teamBBowlers = squad.teamB
-        .filter((p) => p.role === "BOWL" || p.role === "AR")
-        .map((p) => ({ id: p.id, name: p.name }));
-
-      for (const player of [...squad.teamA, ...squad.teamB]) {
-        player.recentForm = await getRecentFormForSeries(player.id, match.seriesName, 5);
-        const typicalPosition = await getTypicalBattingPosition(player.id);
-        if (typicalPosition != null) player.typicalBattingPosition = typicalPosition;
-
-        // Real player-vs-player dismissal history against TODAY's actual
-        // opposing bowlers — only meaningful for batters (BAT/WK/AR).
-        if (player.role === "BAT" || player.role === "WK" || player.role === "AR") {
-          const isTeamA = squad.teamA.some((p) => p.id === player.id);
-          const opposingBowlers = isTeamA ? teamBBowlers : teamABowlers;
-          const concerns = await getMatchupConcerns(player.id, opposingBowlers);
-          if (concerns.length > 0) player.matchupConcerns = concerns;
-        }
-      }
+      const { enrichSquad } = await import("@/lib/cricket-api/fetch-and-cache-squad");
+      await enrichSquad(squad, match);
       squadsByMatchId.set(match.id, squad);
       await setCacheEntry(`squad:${match.id}`, squad);
       log.push(`squad ${match.id}: cached`);

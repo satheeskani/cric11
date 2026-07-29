@@ -29,6 +29,29 @@ function buildPool(): Player[] {
   return [...teamAWk, ...teamBWk, ...teamABat, ...teamBBat, ...teamABowl, ...teamBBowl, ...teamAAr, ...teamBAr];
 }
 
+describe("maxPerTeam allows up to a 10:1 split", () => {
+  it("selects 10 players from a heavily dominant team, forcing only 1 from the other", () => {
+    const pool = buildPool().map((p) =>
+      p.teamId === "A"
+        ? {
+            ...p,
+            recentForm: [
+              { date: "2026-01-01", opponent: "X", result: "W" as const, fantasyPoints: 100 },
+              { date: "2026-01-05", opponent: "X", result: "W" as const, fantasyPoints: 100 },
+            ],
+          }
+        : p,
+    );
+    const result = predictTeam({ players: pool, venue: null });
+    const teamACount = result.players.filter((p) => p.teamId === "A").length;
+    const teamBCount = result.players.filter((p) => p.teamId === "B").length;
+
+    expect(teamACount).toBe(10);
+    expect(teamBCount).toBe(1);
+    expect(teamACount).toBeLessThanOrEqual(ROLE_CONSTRAINTS.maxPerTeam);
+  });
+});
+
 describe("consistency modifier on form", () => {
   it("scores a consistent player higher than an equally-averaged but volatile one", () => {
     const consistent = makePlayer({

@@ -31,16 +31,38 @@ const mockProvider = new MockCricketApiProvider();
  * matches from lingering in the UI until the next manual refresh happens
  * to overwrite them.
  */
-function excludeStarted(matches: UpcomingMatch[]): UpcomingMatch[] {
+export function excludeStarted(matches: UpcomingMatch[]): UpcomingMatch[] {
   const now = Date.now();
   return matches.filter((m) => new Date(m.startTime).getTime() > now);
 }
 
 export async function getMatches(): Promise<UpcomingMatch[]> {
   const cached = await getCacheEntry<UpcomingMatch[]>("matches:upcoming");
-  if (cached) return excludeStarted(cached.value);
+  if (cached) {
+    const stillUpcoming = excludeStarted(cached.value);
+    if (stillUpcoming.length > 0) return stillUpcoming;
+    // Cached list exists but every entry has since started/passed —
+    // same "fetch on genuine cache miss" pattern as squads (see
+    // lib/cricket-api/fetch-and-cache-squad.ts). Without this, the app
+    // could show "no upcoming matches" indefinitely, even with real
+    // matches available, until someone manually ran the cron endpoint.
+    try {
+      const { fetchAndCacheMatches } = await import("@/lib/cricket-api/fetch-and-cache-matches");
+      const fresh = await fetchAndCacheMatches();
+      return excludeStarted(fresh);
+    } catch {
+      return []; // live fetch failed (e.g. budget exhausted) — fail to empty, not an error page
+    }
+  }
   if (!isMongoConfigured()) return excludeStarted(await mockProvider.getUpcomingMatches());
-  return [];
+  // No cache entry at all yet (first-ever run) — same live-fetch fallback.
+  try {
+    const { fetchAndCacheMatches } = await import("@/lib/cricket-api/fetch-and-cache-matches");
+    const fresh = await fetchAndCacheMatches();
+    return excludeStarted(fresh);
+  } catch {
+    return [];
+  }
 }
 
 export async function getSquad(matchId: string): Promise<{ teamA: Player[]; teamB: Player[] } | null> {
