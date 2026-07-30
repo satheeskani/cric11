@@ -44,14 +44,34 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "excludedPlayerIds must be an array of strings" }, { status: 400 });
   }
 
-  const [matches, squad] = await Promise.all([getMatches(), getSquad(body.matchId)]);
+  const [matches, cachedSquad] = await Promise.all([getMatches(), getSquad(body.matchId)]);
 
   const match = matches.find((m) => m.id === body.matchId);
   if (!match) {
     return NextResponse.json({ error: `Unknown matchId: ${body.matchId}` }, { status: 404 });
   }
+
+  // Same "fetch on genuine cache miss" fallback as /api/squad/[matchId] —
+  // without this, this route depended on that OTHER route having already
+  // populated the cache first. The homepage fires both requests in
+  // parallel on match selection, so this route's cache read could easily
+  // lose that race and fail with a stale "not synced" error even though
+  // the squad was genuinely fetchable (and the squad panel would show it
+  // correctly moments later, a confusing inconsistency).
+  let squad = cachedSquad;
   if (!squad) {
-    return NextResponse.json({ error: "Squad not yet synced for this match" }, { status: 404 });
+    try {
+      const { fetchAndCacheSquad } = await import("@/lib/cricket-api/fetch-and-cache-squad");
+      squad = await fetchAndCacheSquad(body.matchId);
+    } catch (err) {
+      return NextResponse.json({ error: `Could not fetch squad live: ${(err as Error).message}` }, { status: 502 });
+    }
+  }
+  if (!squad) {
+    return NextResponse.json(
+      { error: "This match isn't currently upcoming — it may have started, ended, or the id is wrong." },
+      { status: 404 },
+    );
   }
 
   const venue = await getVenue(match.venueId);
