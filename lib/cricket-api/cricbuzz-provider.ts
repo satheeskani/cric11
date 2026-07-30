@@ -160,8 +160,14 @@ export class CricbuzzProvider implements CricketApiProvider {
    * come back with missing teams/venue/time, log a raw matchInfo object
    * and adjust the field names here.
    */
-  async getUpcomingMatches(): Promise<UpcomingMatch[]> {
-    const data = await this.fetchJson<{ typeMatches: any[] }>("/matches/v1/upcoming");
+  /**
+   * Shared parsing for the typeMatches->seriesMatches->matches shape
+   * used by /matches/v1/upcoming, /matches/v1/live, and /matches/v1/recent
+   * (verified live — all three share this exact structure). `stateFilter`
+   * lets callers narrow to specific matchInfo.state values (e.g. "Toss")
+   * when pulling from an endpoint that mixes match phases together.
+   */
+  private parseMatchList(data: { typeMatches: any[] }, stateFilter?: (state: string) => boolean): UpcomingMatch[] {
     const results: UpcomingMatch[] = [];
 
     for (const typeMatch of data.typeMatches ?? []) {
@@ -173,6 +179,7 @@ export class CricbuzzProvider implements CricketApiProvider {
         for (const m of wrapper.matches ?? []) {
           const info = m.matchInfo;
           if (!info) continue;
+          if (stateFilter && !stateFilter(info.state ?? "")) continue;
 
           const matchId = String(info.matchId);
           const team1Id = String(info.team1?.teamId ?? "");
@@ -211,6 +218,39 @@ export class CricbuzzProvider implements CricketApiProvider {
           });
         }
       }
+    }
+
+    return results;
+  }
+
+  /**
+   * Real gap this closes: Cricbuzz reclassifies a match from "upcoming"
+   * to "live" internally the moment the toss happens — well before the
+   * first ball is bowled (confirmed live: a match sitting at matchInfo.state
+   * "Toss" is completely absent from /matches/v1/upcoming). Without this,
+   * every match briefly vanishes from the app entirely right around its
+   * own toss time (no longer upcoming, not yet completed). Only "Toss"
+   * state is merged in — "In Progress"/"Innings Break"/"Complete" mean
+   * play has actually started, which this pre-match prediction tool
+   * isn't meant to handle. Costs one extra request per matches-list
+   * fetch (bounded the same way as the rest of this provider, since
+   * matches-list fetches only happen on a genuine cache miss).
+   */
+  async getUpcomingMatches(): Promise<UpcomingMatch[]> {
+    const upcoming = await this.fetchJson<{ typeMatches: any[] }>("/matches/v1/upcoming");
+    const results = this.parseMatchList(upcoming);
+
+    try {
+      const live = await this.fetchJson<{ typeMatches: any[] }>("/matches/v1/live");
+      const tossStage = this.parseMatchList(live, (state) => state === "Toss");
+      const existingIds = new Set(results.map((m) => m.id));
+      for (const match of tossStage) {
+        if (!existingIds.has(match.id)) results.push(match);
+      }
+    } catch {
+      // Live-endpoint merge is a best-effort addition — if it fails, still
+      // return the genuinely-upcoming matches rather than failing the
+      // whole list.
     }
 
     return results.sort(

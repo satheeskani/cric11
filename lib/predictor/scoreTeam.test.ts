@@ -29,6 +29,17 @@ function buildPool(): Player[] {
   return [...teamAWk, ...teamBWk, ...teamABat, ...teamBBat, ...teamABowl, ...teamBBowl, ...teamAAr, ...teamBAr];
 }
 
+describe("defensive credit floor", () => {
+  it("does not produce NaN or Infinity when a player somehow has zero or negative credits", () => {
+    const pool = buildPool().map((p, i) => (i === 0 ? { ...p, credits: 0 } : i === 1 ? { ...p, credits: -5 } : p));
+    const scored = computePlayerScores({ players: pool, venue: null });
+    for (const p of scored) {
+      expect(Number.isFinite(p.score.valueScore)).toBe(true);
+      expect(Number.isFinite(p.score.composite)).toBe(true);
+    }
+  });
+});
+
 describe("maxPerTeam allows up to a 10:1 split", () => {
   it("selects 10 players from a heavily dominant team, forcing only 1 from the other", () => {
     const pool = buildPool().map((p) =>

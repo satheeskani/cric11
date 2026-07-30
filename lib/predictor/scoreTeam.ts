@@ -21,8 +21,20 @@ function minMaxNormalize(values: number[]): number[] {
   return values.map((v) => (v - min) / (max - min));
 }
 
+/**
+ * Recency-weighted, not a flat average — a player 3-for-3 in their last
+ * 3 knocks and quiet before that should rank above one with the same
+ * average shaped the other way. player.recentForm is already sorted
+ * most-recent-first (see the .sort({date: -1}) in the accumulator that
+ * populates it), so index 0 gets the highest linear weight.
+ */
 function recentFormRaw(player: Player): number {
-  return average(player.recentForm.map((f) => f.fantasyPoints));
+  const form = player.recentForm;
+  if (form.length === 0) return 0;
+  const weights = form.map((_, i) => form.length - i);
+  const weightedSum = form.reduce((sum, f, i) => sum + f.fantasyPoints * weights[i], 0);
+  const totalWeight = weights.reduce((a, b) => a + b, 0);
+  return weightedSum / totalWeight;
 }
 
 /**
@@ -74,7 +86,22 @@ function venueFitRaw(player: Player, input: PredictorInput): number {
     balanced: {},
   };
   const bonus = pitchBonus[input.venue.pitchType]?.[player.role] ?? 0;
-  return input.venue.avgFirstInningsScore / 10 + bonus;
+
+  // Real toss-bias signal (was computed and stored but never read until
+  // now — a genuine bug, not a missing feature). This does NOT tell us
+  // who won TODAY's actual toss (unknowable at this API tier) — only
+  // the venue's historical tendency. A venue where toss winners
+  // strongly prefer batting first (>0.6) suggests conditions ease early
+  // and toughen later — small additional bowler nudge. The reverse
+  // (<0.4) suggests the opposite. Deliberately small, and only applied
+  // outside a 0.4-0.6 neutral band, since this reinforces the existing
+  // pitch-type signal rather than introducing an independent one.
+  const toss = input.venue.tossWinBattingBias;
+  const tossBonusTable: Partial<Record<Player["role"], number>> =
+    toss > 0.6 ? { BOWL: 4, AR: 2 } : toss < 0.4 ? { BAT: 4, AR: 2, WK: 3 } : {};
+  const tossBonus = tossBonusTable[player.role] ?? 0;
+
+  return input.venue.avgFirstInningsScore / 10 + bonus + tossBonus;
 }
 
 /**
@@ -158,7 +185,67 @@ function weatherFitRaw(player: Player, input: PredictorInput): number {
   return 50 + (bonus[player.role] ?? 0);
 }
 
-function reasonFor(player: Player, breakdown: Omit<PlayerScoreBreakdown, "reason">): string {
+const ROTATION_RISK_DAYS = 21;
+
+/**
+ * Real, computable from data already in hand — no new accumulator or
+ * API call needed. player.recentForm is already sorted most-recent-
+ * first, so its first entry's date is the last tracked appearance.
+ * Deliberately descriptive, not speculative: reports the gap as a fact
+ * ("hasn't appeared recently"), never guesses a cause (injury, rest,
+ * tournament break between competitions are all equally plausible and
+ * indistinguishable from this data alone).
+ */
+function daysSinceLastAppearance(player: Player): number | null {
+  const lastDate = player.recentForm[0]?.date;
+  if (!lastDate) return null;
+  return Math.floor((Date.now() - new Date(lastDate).getTime()) / (1000 * 60 * 60 * 24));
+}
+
+function isLeftHandedBat(battingStyle?: string): boolean {
+  return !!battingStyle?.toLowerCase().includes("left");
+}
+
+/**
+ * Well-established general spin-vs-handedness cricket principle, not
+ * exhaustive analysis — real exceptions exist for individual players.
+ * Off-spin turns away from a left-handed batter (tougher for LHB);
+ * leg-spin and left-arm orthodox both turn away from a right-handed
+ * batter (tougher for RHB). Deliberately excludes pace-vs-handedness
+ * matchups, where the angle/swing effect is less universally agreed
+ * upon and riskier to encode confidently.
+ */
+function isToughSpinMatchup(bowlingStyle: string | undefined, isLHB: boolean): boolean {
+  const style = bowlingStyle?.toLowerCase() ?? "";
+  const isOffSpin = style.includes("off break") || style.includes("offbreak") || style.includes("off-break");
+  const isLegSpinOrLeftArmOrthodox =
+    style.includes("leg break") ||
+    style.includes("legbreak") ||
+    style.includes("leg-break") ||
+    style.includes("left-arm orthodox") ||
+    style.includes("left arm orthodox");
+  if (isOffSpin) return isLHB;
+  if (isLegSpinOrLeftArmOrthodox) return !isLHB;
+  return false;
+}
+
+/**
+ * Finds real opposing bowlers whose style creates a historically tough
+ * matchup against this batter's hand — see isToughSpinMatchup's doc
+ * comment for the specific, deliberately-scoped rule being applied.
+ */
+function findToughStyleMatchupBowlers(player: Player, allPlayers: Player[]): string[] {
+  if (player.role !== "BAT" && player.role !== "WK" && player.role !== "AR") return [];
+  const isLHB = isLeftHandedBat(player.battingStyle);
+  const opposing = allPlayers.filter((p) => p.teamId !== player.teamId && (p.role === "BOWL" || p.role === "AR"));
+  return opposing.filter((b) => isToughSpinMatchup(b.bowlingStyle, isLHB)).map((b) => b.name);
+}
+
+function reasonFor(
+  player: Player,
+  breakdown: Omit<PlayerScoreBreakdown, "reason">,
+  styleMatchupBowlers: string[] = [],
+): string {
   const parts: string[] = [];
   const form = player.recentForm;
   const fifties = form.filter((f) => (f.runsScored ?? 0) >= 50).length;
@@ -190,6 +277,20 @@ function reasonFor(player: Player, breakdown: Omit<PlayerScoreBreakdown, "reason
   const concern = player.matchupConcerns?.[0];
   if (concern) {
     parts.push(`Dismissed by ${concern.bowlerName} ${concern.dismissals} times recently`);
+  }
+
+  // Real, computed from data already in hand — see daysSinceLastAppearance's
+  // doc comment for why this is deliberately descriptive, not speculative.
+  const gap = daysSinceLastAppearance(player);
+  if (gap != null && gap >= ROTATION_RISK_DAYS) {
+    parts.push(`Hasn't appeared in a tracked match in ${gap}+ days`);
+  }
+
+  // Well-established general spin-vs-handedness principle — see
+  // isToughSpinMatchup's doc comment for the specific rule and its
+  // deliberate scope (spin only, not pace).
+  if (styleMatchupBowlers.length > 0) {
+    parts.push(`Faces a historically tricky matchup vs ${styleMatchupBowlers[0]}'s bowling style`);
   }
 
   if (parts.length === 0) parts.push("Solid all-round composite score");
@@ -227,14 +328,18 @@ export function computePlayerScores(input: PredictorInput): ScoredPlayer[] {
 
   // Value depends on form+venue+h2h+weather, so compute it in a second
   // pass once those are normalized, then normalize value itself across
-  // the pool.
+  // the pool. Math.max floor guards the division: currently safe by
+  // construction (every credit-assignment path floors at 7.0), but this
+  // makes that an enforced invariant rather than an assumption — real
+  // external data (like the pending career-stats work) could otherwise
+  // theoretically produce something unexpected.
   const preValue = players.map(
     (_, i) =>
       (formNorm[i] * weights.form +
         venueNorm[i] * weights.venue +
         h2hNorm[i] * weights.headToHead +
         weatherNorm[i] * weights.weather) /
-      players[i].credits,
+      Math.max(0.1, players[i].credits),
   );
   const valueNorm = minMaxNormalize(preValue);
 
@@ -266,7 +371,7 @@ export function computePlayerScores(input: PredictorInput): ScoredPlayer[] {
 
     return {
       ...player,
-      score: { ...breakdown, reason: reasonFor(player, breakdown) },
+      score: { ...breakdown, reason: reasonFor(player, breakdown, findToughStyleMatchupBowlers(player, players)) },
     };
   });
 }
