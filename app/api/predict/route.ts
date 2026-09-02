@@ -145,21 +145,17 @@ export async function POST(req: Request) {
     teamWinRates,
   });
 
-  const roleCounts = { BAT: 0, BOWL: 0, AR: 0, WK: 0 };
-  for (const p of result.players) roleCounts[p.role]++;
-  const meetsRoleMinimums =
-    roleCounts.WK >= ROLE_CONSTRAINTS.minWicketkeepers &&
-    roleCounts.BAT >= ROLE_CONSTRAINTS.minBatsmen &&
-    roleCounts.BOWL >= ROLE_CONSTRAINTS.minBowlers &&
-    roleCounts.AR >= ROLE_CONSTRAINTS.minAllRounders;
-
-  if (result.players.length < ROLE_CONSTRAINTS.teamSize || !meetsRoleMinimums) {
+  if (result.players.length < ROLE_CONSTRAINTS.teamSize || !result.meetsRoleMinimums) {
     // Excluding these players made a valid 11 impossible — e.g. every
-    // wicketkeeper in the squad got marked out. Checking role counts
-    // directly, not just team length: predictTeam can still return
-    // exactly 11 players while silently missing a required role
-    // entirely (a known edge case in the selection algorithm's slot
-    // arithmetic), so length alone isn't a reliable signal here.
+    // wicketkeeper in the squad got marked out. result.meetsRoleMinimums
+    // is computed once inside predictTeam itself from the real selected
+    // team (see its doc comment) — this route just reads that single
+    // source of truth instead of re-deriving role counts independently,
+    // which is what let this check drift out of sync with the algorithm
+    // before. team.length alone isn't reliable here: predictTeam can
+    // still return exactly 11 players while silently missing a required
+    // role entirely (a known edge case in the selection algorithm's slot
+    // arithmetic).
     return NextResponse.json(
       {
         error:

@@ -3,13 +3,21 @@ import { setCacheEntry } from "@/lib/db/api-cache";
 import type { UpcomingMatch, Player } from "@/lib/cricket-api/types";
 import { getRecentFormForSeries, getTypicalBattingPosition } from "@/lib/db/player-match-logs";
 import { getMatchupConcerns } from "@/lib/db/player-matchup-logs";
+import { recomputeCredits } from "@/lib/cricket-api/estimate-credits";
 
 /**
- * Attaches real recentForm, typicalBattingPosition, and matchupConcerns
- * to every player in a squad — pure Mongo reads, zero API cost. Shared
- * between the cron route (which already has `match` in scope from its
- * own earlier getUpcomingMatches call) and the on-demand fetch below, so
- * this enrichment logic only lives in one place.
+ * Attaches real recentForm, typicalBattingPosition, matchupConcerns, and
+ * form-adjusted credits to every player in a squad — pure Mongo reads,
+ * zero API cost. Shared between the cron route (which already has
+ * `match` in scope from its own earlier getUpcomingMatches call) and the
+ * on-demand fetch below, so this enrichment logic only lives in one
+ * place.
+ *
+ * Runs all players concurrently (Promise.all), not sequentially — a
+ * squad is ~30 players x 3 awaited Mongo reads each, so a naive
+ * sequential loop here was doing up to ~90 round-trips back to back on
+ * every cron run and every first-view fetch. Each player's reads are
+ * fully independent, so there's no correctness reason to serialize them.
  */
 export async function enrichSquad(
   squad: { teamA: Player[]; teamB: Player[] },
@@ -22,18 +30,27 @@ export async function enrichSquad(
     .filter((p) => p.role === "BOWL" || p.role === "AR")
     .map((p) => ({ id: p.id, name: p.name }));
 
-  for (const player of [...squad.teamA, ...squad.teamB]) {
-    player.recentForm = await getRecentFormForSeries(player.id, match.seriesName, 5);
-    const typicalPosition = await getTypicalBattingPosition(player.id);
-    if (typicalPosition != null) player.typicalBattingPosition = typicalPosition;
+  await Promise.all(
+    [...squad.teamA, ...squad.teamB].map(async (player) => {
+      player.recentForm = await getRecentFormForSeries(player.id, match.seriesName, 5);
 
-    if (player.role === "BAT" || player.role === "WK" || player.role === "AR") {
-      const isTeamA = squad.teamA.some((p) => p.id === player.id);
-      const opposingBowlers = isTeamA ? teamBBowlers : teamABowlers;
-      const concerns = await getMatchupConcerns(player.id, opposingBowlers);
-      if (concerns.length > 0) player.matchupConcerns = concerns;
-    }
-  }
+      // Providers assign a flat role-baseline credit at the initial squad
+      // fetch, before any recentForm exists — recompute now that real
+      // form data is in hand, so the credit cap actually reflects who's
+      // been performing, not just what role they play.
+      player.credits = recomputeCredits(player.role, player.recentForm);
+
+      const typicalPosition = await getTypicalBattingPosition(player.id);
+      if (typicalPosition != null) player.typicalBattingPosition = typicalPosition;
+
+      if (player.role === "BAT" || player.role === "WK" || player.role === "AR") {
+        const isTeamA = squad.teamA.some((p) => p.id === player.id);
+        const opposingBowlers = isTeamA ? teamBBowlers : teamABowlers;
+        const concerns = await getMatchupConcerns(player.id, opposingBowlers);
+        if (concerns.length > 0) player.matchupConcerns = concerns;
+      }
+    }),
+  );
 }
 
 /**

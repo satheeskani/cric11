@@ -36,6 +36,7 @@ function buildMatchLogEntries(
     const battingOrder = innings.batsman ?? [];
     for (let idx = 0; idx < battingOrder.length; idx++) {
       const b = battingOrder[idx];
+      const strikeRate = Number.parseFloat(b.strkrate);
       entries.push({
         playerId: String(b.id),
         matchId: match.matchId,
@@ -46,9 +47,13 @@ function buildMatchLogEntries(
         fantasyPoints: estimateBattingPoints(b.runs, b.fours, b.sixes),
         seriesName: match.seriesName,
         battingPosition: idx + 1,
+        ballsFaced: typeof b.balls === "number" ? b.balls : undefined,
+        strikeRate: Number.isFinite(strikeRate) ? strikeRate : undefined,
       });
     }
     for (const bw of innings.bowler ?? []) {
+      const oversBowled = Number.parseFloat(bw.overs);
+      const economy = Number.parseFloat(bw.economy);
       entries.push({
         playerId: String(bw.id),
         matchId: match.matchId,
@@ -58,6 +63,9 @@ function buildMatchLogEntries(
         wicketsTaken: bw.wickets,
         fantasyPoints: estimateBowlingPoints(bw.wickets, bw.maidens ?? 0),
         seriesName: match.seriesName,
+        oversBowled: Number.isFinite(oversBowled) ? oversBowled : undefined,
+        economy: Number.isFinite(economy) ? economy : undefined,
+        runsConceded: typeof bw.runs === "number" ? bw.runs : undefined,
       });
     }
   }

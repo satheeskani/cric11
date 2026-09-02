@@ -1,4 +1,4 @@
-import type { Player, VenueStats } from "@/lib/cricket-api/types";
+import type { Player, PlayerRole, VenueStats } from "@/lib/cricket-api/types";
 import type { WeatherForecast } from "@/lib/weather/types";
 
 export interface PredictorWeights {
@@ -47,6 +47,20 @@ export interface PredictedTeamResult {
    * cleared the appearance bar yet, or recentForm data is still thin.
    */
   usedLikelyXIFilter: boolean;
+  /**
+   * True only when the selected 11 actually satisfies every role minimum
+   * (WK/BAT/BOWL/AR) — computed here, once, from the real selected team,
+   * rather than left for every caller to re-derive independently. Exists
+   * because selectTeam's slot-arithmetic can still reach 11 players while
+   * silently missing an entire role if the pool is too thin in that role
+   * (e.g. every wicketkeeper got marked out) — a real, known edge case,
+   * not hypothetical. False means the team below is NOT format-valid;
+   * check roleShortfalls for which role(s) fell short and by how much.
+   */
+  meetsRoleMinimums: boolean;
+  /** Which roles fell short of their minimum, and by how many players —
+   * empty when meetsRoleMinimums is true. */
+  roleShortfalls: Partial<Record<PlayerRole, number>>;
   /**
    * Every scored player who was considered but NOT selected into the
    * final 11, sorted by composite score (closest misses first). Each

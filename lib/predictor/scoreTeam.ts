@@ -14,11 +14,36 @@ function average(values: number[]): number {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
+const WINSORIZE_MIN_POOL_SIZE = 4;
+const WINSORIZE_STD_DEVS = 2;
+
+/**
+ * Clips values beyond +/-2 standard deviations from the pool mean before
+ * min-max scaling — a single freak performance (e.g. one 150-fantasy-
+ * point outlier in a squad of otherwise 20-40 point players) would
+ * otherwise stretch the whole 0-1 scale and compress everyone else's
+ * real differences toward 0. Skipped for pools under
+ * WINSORIZE_MIN_POOL_SIZE, since there isn't enough data to distinguish
+ * a genuine outlier from normal variance at that size, and clipping
+ * could do more harm than good.
+ */
+function winsorize(values: number[]): number[] {
+  if (values.length < WINSORIZE_MIN_POOL_SIZE) return values;
+  const mean = average(values);
+  const variance = average(values.map((v) => (v - mean) ** 2));
+  const stdDev = Math.sqrt(variance);
+  if (stdDev === 0) return values;
+  const lower = mean - WINSORIZE_STD_DEVS * stdDev;
+  const upper = mean + WINSORIZE_STD_DEVS * stdDev;
+  return values.map((v) => Math.min(upper, Math.max(lower, v)));
+}
+
 function minMaxNormalize(values: number[]): number[] {
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  if (max === min) return values.map(() => 0.5);
-  return values.map((v) => (v - min) / (max - min));
+  const clipped = winsorize(values);
+  const min = Math.min(...clipped);
+  const max = Math.max(...clipped);
+  if (max === min) return clipped.map(() => 0.5);
+  return clipped.map((v) => (v - min) / (max - min));
 }
 
 /**
@@ -35,6 +60,24 @@ function recentFormRaw(player: Player): number {
   const weightedSum = form.reduce((sum, f, i) => sum + f.fantasyPoints * weights[i], 0);
   const totalWeight = weights.reduce((a, b) => a + b, 0);
   return weightedSum / totalWeight;
+}
+
+const SHRINKAGE_FULL_CONFIDENCE_MATCHES = 5;
+
+/**
+ * Regresses a player's raw form average toward the pool's mean form,
+ * proportionally to how little data backs it up — a player with exactly
+ * 1 tracked match otherwise gets that single score trusted at full
+ * strength, so a fluke 90-point knock reads identically to a genuinely
+ * proven 90-point average. Standard empirical-Bayes shrinkage: full
+ * confidence (no shrinkage) once a player has SHRINKAGE_FULL_CONFIDENCE_MATCHES
+ * tracked matches, linearly less trust below that, blended with the
+ * pool's own mean rather than an arbitrary constant so the "regression
+ * target" is itself real, current data.
+ */
+function shrinkTowardPoolMean(rawValue: number, sampleSize: number, poolMean: number): number {
+  const confidence = Math.min(sampleSize / SHRINKAGE_FULL_CONFIDENCE_MATCHES, 1);
+  return rawValue * confidence + poolMean * (1 - confidence);
 }
 
 /**
@@ -310,13 +353,25 @@ export function computePlayerScores(input: PredictorInput): ScoredPlayer[] {
     teamIds.map((id) => [id, computeTeamStrength(players, id, ["BAT", "WK", "AR"])]),
   );
 
+  // Shrink each player's raw form toward the pool's mean, proportional to
+  // how little data backs it up (see shrinkTowardPoolMean's doc comment)
+  // — computed once here so both the form pillar AND the value pillar
+  // below use the same de-noised figure, rather than each separately
+  // trusting a thin sample at full strength.
+  const rawForm = players.map((p) => recentFormRaw(p));
+  const formValuesWithData = players
+    .map((p, i) => (p.recentForm.length > 0 ? rawForm[i] : null))
+    .filter((v): v is number => v != null);
+  const poolMeanForm = formValuesWithData.length > 0 ? average(formValuesWithData) : 0;
+  const shrunkForm = players.map((p, i) => shrinkTowardPoolMean(rawForm[i], p.recentForm.length, poolMeanForm));
+
   // Consistency modifies form directly (not a separate weighted pillar
   // — that would mean rebalancing all 5 tuned weights again for what's
   // really a reliability adjustment on ONE of them). Kept deliberately
   // mild (0.85-1.15x) so it nudges rather than dominates: a wildly
   // inconsistent player doesn't get wiped out, a very consistent one
   // doesn't get an outsized boost either.
-  const formRaw = players.map((p) => recentFormRaw(p) * (0.85 + 0.3 * recentFormConsistency(p)));
+  const formRaw = players.map((p, i) => shrunkForm[i] * (0.85 + 0.3 * recentFormConsistency(p)));
   const venueRaw = players.map((p) => venueFitRaw(p, input));
   const h2hRaw = players.map((p) => headToHeadRaw(p, input, bowlingStrengthByTeam, battingStrengthByTeam));
   const weatherRaw = players.map((p) => weatherFitRaw(p, input));
@@ -326,21 +381,16 @@ export function computePlayerScores(input: PredictorInput): ScoredPlayer[] {
   const h2hNorm = minMaxNormalize(h2hRaw);
   const weatherNorm = minMaxNormalize(weatherRaw);
 
-  // Value depends on form+venue+h2h+weather, so compute it in a second
-  // pass once those are normalized, then normalize value itself across
-  // the pool. Math.max floor guards the division: currently safe by
-  // construction (every credit-assignment path floors at 7.0), but this
-  // makes that an enforced invariant rather than an assumption — real
-  // external data (like the pending career-stats work) could otherwise
-  // theoretically produce something unexpected.
-  const preValue = players.map(
-    (_, i) =>
-      (formNorm[i] * weights.form +
-        venueNorm[i] * weights.venue +
-        h2hNorm[i] * weights.headToHead +
-        weatherNorm[i] * weights.weather) /
-      Math.max(0.1, players[i].credits),
-  );
+  // Value is real output per credit — shrunk form (the same de-noised
+  // figure the form pillar uses) divided by cost. Deliberately NOT a
+  // recombination of form/venue/h2h/weather's own normalized scores:
+  // that used to make value almost entirely redundant with form (a
+  // player who already scored well on those four got rewarded a SECOND
+  // time for the same underlying signal). Math.max floor guards the
+  // division: currently safe by construction (every credit-assignment
+  // path floors at 7.0), but this makes that an enforced invariant
+  // rather than an assumption.
+  const preValue = players.map((p, i) => shrunkForm[i] / Math.max(0.1, p.credits));
   const valueNorm = minMaxNormalize(preValue);
 
   return players.map((player, i) => {
@@ -422,12 +472,73 @@ function unmetMinimums(team: ScoredPlayer[]): number {
   return totalDeficit > slotsLeft ? totalDeficit - slotsLeft : 0;
 }
 
+const SWAP_REFINEMENT_MAX_ITERATIONS = 50;
+
 /**
- * Greedy-with-backtracking selection: repeatedly take the highest-composite
- * remaining player that keeps role minimums reachable and doesn't breach the
- * credit cap / max-per-team / role-maximum constraints. Not a perfectly
- * optimal knapsack solve, but simple, fast, and good enough for 22-30 player
- * pools where near-optimal is what matters, not globally optimal.
+ * Bounded local-search refinement: for each selected player, check
+ * whether swapping them for a higher-composite same-role player NOT on
+ * the team (from the full pool) would still respect the credit cap and
+ * per-team limit, and apply the swap if so — repeating until no
+ * improving swap exists. Pass 1/2 above are greedy and can settle into
+ * a locally-good-but-not-best lineup: e.g. an early pick can block a
+ * later, better same-role player purely on credit-cap timing, even
+ * though swapping them in afterward would still fit the budget.
+ *
+ * Deliberately scoped to same-role swaps only: this can never change
+ * role composition (so it can't un-meet already-met minimums, and can't
+ * help fix a role that had zero eligible players to begin with — see
+ * meetsRoleMinimums for that separate, honest failure mode). It only
+ * asks "given the roles we already picked, did we get the best
+ * available player for each one?" — strictly non-decreasing on total
+ * composite, capped at SWAP_REFINEMENT_MAX_ITERATIONS as a defensive
+ * bound (in practice it converges in a handful of passes).
+ */
+function refineByLocalSwaps(team: ScoredPlayer[], pool: ScoredPlayer[], creditCap: number): ScoredPlayer[] {
+  const current = [...team];
+  let iterations = 0;
+
+  while (iterations < SWAP_REFINEMENT_MAX_ITERATIONS) {
+    iterations++;
+    const creditsUsed = current.reduce((sum, p) => sum + p.credits, 0);
+    let swapped = false;
+
+    for (let i = 0; i < current.length; i++) {
+      const incumbent = current[i];
+      const perTeamWithoutIncumbent = countPerTeam(current.filter((p) => p.id !== incumbent.id));
+
+      const better = pool
+        .filter(
+          (candidate) =>
+            candidate.role === incumbent.role &&
+            !current.some((t) => t.id === candidate.id) &&
+            candidate.score.composite > incumbent.score.composite &&
+            creditsUsed - incumbent.credits + candidate.credits <= creditCap &&
+            (perTeamWithoutIncumbent.get(candidate.teamId) ?? 0) + 1 <= ROLE_CONSTRAINTS.maxPerTeam,
+        )
+        .sort((a, b) => b.score.composite - a.score.composite)[0];
+
+      if (better) {
+        current[i] = better;
+        swapped = true;
+        break;
+      }
+    }
+
+    if (!swapped) break;
+  }
+
+  return current;
+}
+
+/**
+ * Greedy-with-backtracking selection, then a bounded local-swap
+ * refinement pass (see refineByLocalSwaps): repeatedly take the
+ * highest-composite remaining player that keeps role minimums reachable
+ * and doesn't breach the credit cap / max-per-team / role-maximum
+ * constraints, then check whether any selected player can be swapped for
+ * a better same-role option that still fits. Not a full knapsack solve,
+ * but closes most of the realistic gap for 22-30 player pools without
+ * the complexity of an exact solver.
  */
 export function selectTeam(scoredPlayers: ScoredPlayer[], creditCap = ROLE_CONSTRAINTS.creditCap): ScoredPlayer[] {
   const sorted = [...scoredPlayers].sort((a, b) => b.score.composite - a.score.composite);
@@ -464,7 +575,7 @@ export function selectTeam(scoredPlayers: ScoredPlayer[], creditCap = ROLE_CONST
     tryAdd(cheapestFirst, false);
   }
 
-  return team;
+  return refineByLocalSwaps(team, sorted, creditCap);
 }
 
 const MIN_RECENT_APPEARANCES = 1;
@@ -589,6 +700,27 @@ export function predictTeam(input: PredictorInput): PredictedTeamResult {
         }))
     : [];
 
+  // Computed once, here, from the REAL selected team — not left for every
+  // caller (API routes, tests, future UI) to re-derive independently. See
+  // PredictedTeamResult.meetsRoleMinimums's doc comment for why this
+  // matters: selectTeam's slot arithmetic can reach 11 players while
+  // silently missing an entire role when that role's pool is too thin.
+  const finalRoleCounts = countRoles(team);
+  const roleShortfalls: Partial<Record<Player["role"], number>> = {};
+  const shortfall = (min: number, have: number) => Math.max(0, min - have);
+  if (shortfall(ROLE_CONSTRAINTS.minWicketkeepers, finalRoleCounts.WK) > 0) {
+    roleShortfalls.WK = shortfall(ROLE_CONSTRAINTS.minWicketkeepers, finalRoleCounts.WK);
+  }
+  if (shortfall(ROLE_CONSTRAINTS.minBatsmen, finalRoleCounts.BAT) > 0) {
+    roleShortfalls.BAT = shortfall(ROLE_CONSTRAINTS.minBatsmen, finalRoleCounts.BAT);
+  }
+  if (shortfall(ROLE_CONSTRAINTS.minBowlers, finalRoleCounts.BOWL) > 0) {
+    roleShortfalls.BOWL = shortfall(ROLE_CONSTRAINTS.minBowlers, finalRoleCounts.BOWL);
+  }
+  if (shortfall(ROLE_CONSTRAINTS.minAllRounders, finalRoleCounts.AR) > 0) {
+    roleShortfalls.AR = shortfall(ROLE_CONSTRAINTS.minAllRounders, finalRoleCounts.AR);
+  }
+
   return {
     players: team,
     captainId,
@@ -596,6 +728,8 @@ export function predictTeam(input: PredictorInput): PredictedTeamResult {
     totalCredits: team.reduce((sum, p) => sum + p.credits, 0),
     totalScore: team.reduce((sum, p) => sum + p.score.composite, 0),
     usedLikelyXIFilter,
+    meetsRoleMinimums: Object.keys(roleShortfalls).length === 0,
+    roleShortfalls,
     notSelected: [...scoredNotSelected, ...filteredOutPlayers],
   };
 }

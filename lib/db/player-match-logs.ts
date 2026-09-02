@@ -25,6 +25,14 @@ export interface PlayerMatchLog {
    * present for players who actually batted. Bowlers who didn't bat, or
    * matches logged before this field existed, won't have it. */
   battingPosition?: number;
+  /** Real per-innings figures straight from the scorecard's own `balls`/
+   * `strkrate` (batting) and `overs`/`economy`/`runs` (bowling) fields —
+   * zero extra API cost, same fetch as everything else in this file. */
+  ballsFaced?: number;
+  strikeRate?: number;
+  oversBowled?: number;
+  economy?: number;
+  runsConceded?: number;
 }
 
 /**
@@ -99,6 +107,11 @@ export async function getRecentForm(playerId: string, limit = 5): Promise<Recent
     runsScored: d.runsScored,
     wicketsTaken: d.wicketsTaken,
     fantasyPoints: d.fantasyPoints,
+    ballsFaced: d.ballsFaced,
+    strikeRate: d.strikeRate,
+    oversBowled: d.oversBowled,
+    economy: d.economy,
+    runsConceded: d.runsConceded,
   }));
 }
 

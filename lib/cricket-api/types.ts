@@ -34,6 +34,18 @@ export interface RecentFormEntry {
   runsScored?: number;
   wicketsTaken?: number;
   fantasyPoints: number;
+  /** Real per-innings batting figures — Cricbuzz's scorecard already
+   * carries these (`balls`, `strkrate`) at zero extra cost beyond the
+   * fetch already made for runsScored. Only present for players who
+   * actually batted. */
+  ballsFaced?: number;
+  strikeRate?: number;
+  /** Real per-innings bowling figures — same scorecard, zero extra
+   * cost (`overs`, `economy`, `runs` conceded). Only present for
+   * players who actually bowled. */
+  oversBowled?: number;
+  economy?: number;
+  runsConceded?: number;
 }
 
 export interface Player {

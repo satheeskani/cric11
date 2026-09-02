@@ -29,6 +29,122 @@ function buildPool(): Player[] {
   return [...teamAWk, ...teamBWk, ...teamABat, ...teamBBat, ...teamABowl, ...teamBBowl, ...teamAAr, ...teamBAr];
 }
 
+describe("small-sample shrinkage toward pool mean", () => {
+  it("trusts a well-sampled player's average more than a single-match player with the same raw average", () => {
+    const wellSampled = makePlayer({
+      id: "well-sampled-1",
+      role: "BAT",
+      teamId: "A",
+      recentForm: Array.from({ length: 5 }, (_, i) => ({
+        date: `2026-01-0${i + 1}`,
+        opponent: "X",
+        result: "W" as const,
+        fantasyPoints: 100,
+      })),
+    });
+    const oneHitWonder = makePlayer({
+      id: "one-hit-1",
+      role: "BAT",
+      teamId: "A",
+      recentForm: [{ date: "2026-01-01", opponent: "X", result: "W", fantasyPoints: 100 }],
+    });
+    const rest = buildPool().filter((p) => p.role !== "BAT" || p.teamId !== "A");
+
+    const scored = computePlayerScores({ players: [wellSampled, oneHitWonder, ...rest], venue: null });
+    const wellSampledScore = scored.find((p) => p.id === "well-sampled-1")!.score.formScore;
+    const oneHitScore = scored.find((p) => p.id === "one-hit-1")!.score.formScore;
+
+    // Identical raw average (100), but the 5-match player should rank
+    // higher — a single 100 is regressed toward the pool mean, a proven
+    // 5-match 100 isn't.
+    expect(wellSampledScore).toBeGreaterThan(oneHitScore);
+  });
+});
+
+describe("value factor independence", () => {
+  it("does not change with venue fit when form and credits are identical", () => {
+    const inGoodVenue = makePlayer({ id: "venue-good-1", role: "BAT", teamId: "A", credits: 9 });
+    const inBadVenue = makePlayer({ id: "venue-bad-1", role: "BAT", teamId: "A", credits: 9 });
+
+    const scored = computePlayerScores({
+      players: [inGoodVenue, inBadVenue],
+      venue: null,
+      venueHints: [
+        { playerId: "venue-good-1", average: 90, strikeRate: 150 },
+        { playerId: "venue-bad-1", average: 5, strikeRate: 40 },
+      ],
+    });
+    const good = scored.find((p) => p.id === "venue-good-1")!;
+    const bad = scored.find((p) => p.id === "venue-bad-1")!;
+
+    // Confirms the fix: venue score differs a lot (real venue hints),
+    // but value — same form, same credits — should be identical, since
+    // value is no longer a recombination of venue/h2h/weather.
+    expect(good.score.venueScore).not.toBeCloseTo(bad.score.venueScore, 1);
+    expect(good.score.valueScore).toBeCloseTo(bad.score.valueScore, 5);
+  });
+});
+
+describe("winsorized normalization", () => {
+  it("still meaningfully differentiates normal-range players when one extreme outlier is present", () => {
+    const makeFlat = (id: string, points: number) =>
+      makePlayer({
+        id,
+        role: "BAT",
+        teamId: "A",
+        recentForm: Array.from({ length: 5 }, (_, i) => ({
+          date: `2026-01-0${i + 1}`,
+          opponent: "X",
+          result: "W" as const,
+          fantasyPoints: points,
+        })),
+      });
+    const outlier = makeFlat("outlier-1", 500);
+    const strong = makeFlat("strong-1", 60);
+    const weak = makeFlat("weak-1", 10);
+    const filler = [makeFlat("f1", 15), makeFlat("f2", 16), makeFlat("f3", 17)];
+
+    const scored = computePlayerScores({ players: [outlier, strong, weak, ...filler], venue: null });
+    const strongScore = scored.find((p) => p.id === "strong-1")!.score.formScore;
+    const weakScore = scored.find((p) => p.id === "weak-1")!.score.formScore;
+
+    // Without winsorizing, a 500-point outlier would stretch the 0-1
+    // scale so far that strong/weak (60 vs 10) would be squashed to
+    // near-indistinguishable values close to 0. Real separation should
+    // survive the clip.
+    expect(strongScore).toBeGreaterThan(weakScore);
+    expect(strongScore - weakScore).toBeGreaterThan(0.05);
+  });
+});
+
+describe("selectTeam local-swap refinement", () => {
+  it("never leaves a higher-composite same-role player on the bench when swapping them in would still fit the budget", () => {
+    const scored = computePlayerScores({ players: buildPool(), venue: null });
+    const team = selectTeam(scored);
+    const teamIds = new Set(team.map((p) => p.id));
+    const creditsUsed = team.reduce((sum, p) => sum + p.credits, 0);
+    const perTeamCount = new Map<string, number>();
+    for (const p of team) perTeamCount.set(p.teamId, (perTeamCount.get(p.teamId) ?? 0) + 1);
+
+    for (const incumbent of team) {
+      const bench = scored.filter((p) => p.role === incumbent.role && !teamIds.has(p.id));
+      for (const candidate of bench) {
+        const wouldFitCredits = creditsUsed - incumbent.credits + candidate.credits <= ROLE_CONSTRAINTS.creditCap;
+        const perTeamWithoutIncumbent = (perTeamCount.get(incumbent.teamId) ?? 0) - 1;
+        const candidateTeamCount =
+          incumbent.teamId === candidate.teamId ? perTeamWithoutIncumbent + 1 : (perTeamCount.get(candidate.teamId) ?? 0) + 1;
+        const wouldFitTeamLimit = candidateTeamCount <= ROLE_CONSTRAINTS.maxPerTeam;
+
+        if (wouldFitCredits && wouldFitTeamLimit) {
+          // If this swap were legal, it must not be an improvement —
+          // otherwise refineByLocalSwaps left free composite on the table.
+          expect(candidate.score.composite).toBeLessThanOrEqual(incumbent.score.composite);
+        }
+      }
+    }
+  });
+});
+
 describe("defensive credit floor", () => {
   it("does not produce NaN or Infinity when a player somehow has zero or negative credits", () => {
     const pool = buildPool().map((p, i) => (i === 0 ? { ...p, credits: 0 } : i === 1 ? { ...p, credits: -5 } : p));
@@ -332,6 +448,12 @@ describe("predictTeam", () => {
     expect(ids).toContain(result.viceCaptainId);
   });
 
+  it("reports meetsRoleMinimums true with an empty roleShortfalls when the pool is healthy", () => {
+    const result = predictTeam({ players: buildPool(), venue: null });
+    expect(result.meetsRoleMinimums).toBe(true);
+    expect(result.roleShortfalls).toEqual({});
+  });
+
   it("picks the captain as the highest composite scorer on the team", () => {
     const result = predictTeam({ players: buildPool(), venue: null });
     const captain = result.players.find((p) => p.id === result.captainId)!;
@@ -500,13 +622,19 @@ describe("filterLikelyXI", () => {
 });
 
 describe("predictTeam with an entire role excluded", () => {
-  it("KNOWN ISSUE: silently fills the team without the missing role instead of stopping short — selectTeam's slot-arithmetic check doesn't verify the role actually has eligible players, only that a slot is numerically available. This is why the /api/predict route's validity check must verify actual role COUNTS, not just team.length — see the mark-out feature's exclusion check.", () => {
+  it("still fills the team to 11 without the missing role (selectTeam's slot-arithmetic can't conjure a player that doesn't exist in the pool) — but now HONESTLY reports it via meetsRoleMinimums/roleShortfalls instead of looking silently valid", () => {
     const pool = buildPool().filter((p) => p.role !== "WK");
     const result = predictTeam({ players: pool, venue: null });
-    // Documenting real behavior, not endorsing it: still reaches 11
-    // players, but with zero wicketkeepers — a role-constraint
-    // violation that a naive "did we get 11 players?" check would miss.
+    // Real, unavoidable behavior: still reaches 11 players, but with zero
+    // wicketkeepers, since none exist in the pool to select — a naive
+    // "did we get 11 players?" check would miss this entirely.
     expect(result.players).toHaveLength(ROLE_CONSTRAINTS.teamSize);
     expect(result.players.every((p) => p.role !== "WK")).toBe(true);
+    // This is the actual fix: predictTeam itself now surfaces the truth,
+    // computed once from the real selected team, rather than leaving
+    // every caller (API routes, future UI) to re-derive role counts
+    // independently and risk missing this case.
+    expect(result.meetsRoleMinimums).toBe(false);
+    expect(result.roleShortfalls.WK).toBe(ROLE_CONSTRAINTS.minWicketkeepers);
   });
 });
