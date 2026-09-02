@@ -44,7 +44,7 @@ export function MatchSelector({ selectedMatchId, onSelect }: MatchSelectorProps)
     <div className="flex flex-col gap-5">
       {[...groups.entries()].map(([seriesName, seriesMatches]) => (
         <div key={seriesName} className="flex flex-col gap-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-accent">{seriesName}</h3>
+          <h3 className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-accent">{seriesName}</h3>
           <div className="flex flex-col gap-2" role="listbox" aria-label={seriesName}>
             {seriesMatches.map((match) => {
               const selected = match.id === selectedMatchId;
@@ -56,21 +56,23 @@ export function MatchSelector({ selectedMatchId, onSelect }: MatchSelectorProps)
                   aria-selected={selected}
                   onClick={() => onSelect(match.id)}
                   className={cn(
-                    "flex items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors",
+                    "flex items-center justify-between gap-3 rounded-[4px] border border-l-4 px-3.5 py-2.5 text-left transition-colors",
                     selected
-                      ? "border-accent bg-accent/10"
-                      : "border-border bg-card hover:border-foreground/20",
+                      ? "border-border border-l-accent bg-accent/10"
+                      : "border-border border-l-border bg-card hover:border-l-accent/50",
                   )}
                 >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium leading-tight">
-                      {match.teamA.shortName} vs {match.teamB.shortName}
+                    <p className="truncate text-sm font-bold leading-tight">
+                      {match.teamA.shortName} <span className="text-accent">v</span> {match.teamB.shortName}
                     </p>
                     <p className="mt-1 truncate text-xs text-muted-foreground">{match.venueName}</p>
                   </div>
                   <div className="shrink-0 text-right">
-                    <p className="text-xs font-medium text-primary">{formatMatchTime(match.startTime)}</p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">{match.format}</p>
+                    <p className="text-xs font-bold text-primary">{formatMatchTime(match.startTime)}</p>
+                    <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {match.format}
+                    </p>
                   </div>
                 </button>
               );

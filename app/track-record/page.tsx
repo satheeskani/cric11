@@ -6,6 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Disclaimer } from "@/components/disclaimer";
 import { useTrackRecord } from "@/hooks/use-cricket-data";
+import { cn } from "@/lib/utils";
 
 export default function TrackRecordPage() {
   const { data, isLoading, isError } = useTrackRecord();
@@ -13,11 +14,12 @@ export default function TrackRecordPage() {
   return (
     <main className="mx-auto flex max-w-4xl flex-col gap-6 px-4 py-8">
       <header>
-        <Link href="/" className="text-xs text-muted-foreground hover:underline">
+        <Link href="/" className="text-xs font-bold uppercase tracking-wide text-muted-foreground hover:text-accent">
           &larr; Back to predictor
         </Link>
-        <h1 className="mt-2 text-2xl font-bold tracking-tight">Track record</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
+        <p className="mt-3 text-[11px] font-extrabold uppercase tracking-[0.14em] text-accent">Season stats</p>
+        <h1 className="text-3xl font-black italic uppercase leading-none tracking-tight">Track record</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
           Every finalized match below compares our data-informed suggested XI to the average of 100 randomly
           drawn, rule-valid XIs from the same player pool — using each match&apos;s actual results, entered
           manually after the match. This is the honest way to show whether the method adds value; it is not a
@@ -25,25 +27,27 @@ export default function TrackRecordPage() {
         </p>
       </header>
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <Card>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Card className="border-l-4 border-l-role-wk">
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">Matches tracked</p>
-            <p className="text-2xl font-semibold">{data?.summary.totalFinalized ?? "–"}</p>
+            <p className="text-[10px] font-extrabold uppercase tracking-wide text-muted-foreground">Matches tracked</p>
+            <p className="text-3xl font-black italic tabular-nums">{data?.summary.totalFinalized ?? "–"}</p>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="border-l-4 border-l-role-bat">
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">Beat random XI</p>
-            <p className="text-2xl font-semibold">
+            <p className="text-[10px] font-extrabold uppercase tracking-wide text-muted-foreground">Beat random XI</p>
+            <p className="text-3xl font-black italic tabular-nums">
               {data?.summary.beatRandomRate != null ? `${Math.round(data.summary.beatRandomRate * 100)}%` : "–"}
             </p>
           </CardContent>
         </Card>
-        <Card className="col-span-2 sm:col-span-2">
+        <Card className="col-span-2 border-l-4 border-l-primary sm:col-span-2">
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">Average edge vs. random (fantasy points)</p>
-            <p className="text-2xl font-semibold">
+            <p className="text-[10px] font-extrabold uppercase tracking-wide text-muted-foreground">
+              Average edge vs. random (fantasy points)
+            </p>
+            <p className="text-3xl font-black italic tabular-nums">
               {data?.summary.averageEdge != null ? data.summary.averageEdge.toFixed(1) : "–"}
             </p>
           </CardContent>
@@ -52,7 +56,9 @@ export default function TrackRecordPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Match-by-match</CardTitle>
+          <CardTitle className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-muted-foreground">
+            Match-by-match
+          </CardTitle>
         </CardHeader>
         <CardContent>
           {isLoading && <Skeleton className="h-40 w-full" />}
@@ -76,11 +82,11 @@ export default function TrackRecordPage() {
               <TableBody>
                 {data.records.map((r) => (
                   <TableRow key={r.matchId}>
-                    <TableCell className="font-medium">{r.matchId}</TableCell>
+                    <TableCell className="font-bold">{r.matchId}</TableCell>
                     <TableCell>{new Date(r.finalizedAt).toLocaleDateString()}</TableCell>
-                    <TableCell>{r.predictedXIScore.toFixed(1)}</TableCell>
-                    <TableCell>{r.randomXIAvgScore.toFixed(1)}</TableCell>
-                    <TableCell className={r.edge >= 0 ? "text-accent" : "text-destructive"}>
+                    <TableCell className="tabular-nums">{r.predictedXIScore.toFixed(1)}</TableCell>
+                    <TableCell className="tabular-nums">{r.randomXIAvgScore.toFixed(1)}</TableCell>
+                    <TableCell className={cn("tabular-nums font-bold", r.edge >= 0 ? "text-role-bat" : "text-destructive")}>
                       {r.edge >= 0 ? "+" : ""}
                       {r.edge.toFixed(1)}
                     </TableCell>

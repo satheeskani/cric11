@@ -78,18 +78,22 @@ export default function HomePage() {
     <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8">
       <header className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Fantasy Cricket Analysis</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-accent">Cric11</p>
+          <h1 className="text-3xl font-black italic uppercase leading-none tracking-tight">Fantasy Cricket Analysis</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
             Pick a match for a data-informed suggested XI. Statistical analysis, not a prediction guarantee.
           </p>
         </div>
-        <Link href="/track-record" className="shrink-0 text-xs text-muted-foreground hover:underline">
+        <Link
+          href="/track-record"
+          className="shrink-0 text-xs font-bold uppercase tracking-wide text-muted-foreground hover:text-accent"
+        >
           Track record &rarr;
         </Link>
       </header>
 
       {vanishedMatchNotice && (
-        <div className="flex items-start gap-2.5 rounded-lg border border-border bg-muted/40 p-3">
+        <div className="flex items-start gap-2.5 rounded-[4px] border-l-4 border-l-border bg-muted/40 p-3">
           <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <p className="text-sm text-muted-foreground">
             Your selected match has started (or is no longer upcoming) and dropped off the list. Pick another

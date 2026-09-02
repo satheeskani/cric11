@@ -52,28 +52,34 @@ export function MatchOverview({ match }: { match: UpcomingMatch }) {
 
   return (
     <div className="flex flex-col gap-2">
-      <Card>
-        <CardContent className="flex flex-wrap items-center justify-between gap-3 py-4">
+      <Card className="relative overflow-hidden border-t-2 border-t-accent">
+        <div
+          className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-accent opacity-[0.08]"
+          aria-hidden="true"
+        />
+        <CardContent className="relative flex flex-wrap items-center justify-between gap-3 py-4">
           <div>
-            <p className="text-base font-medium">
-              {match.teamA.shortName} vs {match.teamB.shortName}
+            <p className="text-xl font-black italic uppercase leading-none tracking-tight">
+              {match.teamA.shortName} <span className="not-italic text-accent">v</span> {match.teamB.shortName}
             </p>
-            <p className="text-sm text-muted-foreground">{match.venueName}</p>
+            <p className="mt-1.5 text-sm text-muted-foreground">{match.venueName}</p>
           </div>
-          <div className="flex items-center gap-2 text-accent">
+          <div className="flex items-center gap-2">
             <Badge variant="outline">{match.format}</Badge>
-            <AlarmClock className="h-4 w-4" />
-            <span className="text-[15px] font-medium">{countdown}</span>
+            <span className="flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-[13px] font-semibold text-foreground">
+              <AlarmClock className="h-3.5 w-3.5 text-accent" />
+              {countdown}
+            </span>
           </div>
         </CardContent>
       </Card>
 
       {showLineupNudge && (
-        <div className="flex items-start gap-2.5 rounded-lg border border-accent/30 bg-accent/10 p-3">
-          <AlarmClock className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
-          <p className="text-sm text-accent">
+        <div className="flex items-start gap-2.5 rounded-[4px] border-l-4 border-l-primary bg-primary/10 p-3">
+          <AlarmClock className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+          <p className="text-sm text-foreground">
             Lineups are typically announced around now. Check the real lineup and use{" "}
-            <span className="font-medium">&ldquo;mark as out&rdquo;</span> below on anyone not actually playing,
+            <span className="font-bold">&ldquo;mark as out&rdquo;</span> below on anyone not actually playing,
             then regenerate.
           </p>
         </div>
