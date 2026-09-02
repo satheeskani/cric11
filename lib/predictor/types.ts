@@ -103,13 +103,26 @@ export interface PredictorInput {
   teamWinRates?: Record<string, number>;
 }
 
+/**
+ * Bounds tightened from the original generic-platform maximums (which
+ * technically allowed up to 6 bowlers and only 3 batters) to reflect how
+ * a knowledgeable human actually builds a team: batting depth as a
+ * baseline requirement, bowler-stacking treated as high-risk rather than
+ * a valid shape just because the numbers marginally favored it that
+ * match. Without this, small situational nudges (weather, venue) could
+ * tip a cluster of similarly-scored bowlers just ahead of batters and
+ * the optimizer would legally build an 11 that's 6 bowlers deep and only
+ * 3 batters — a shape no real player would pick, since bowlers are
+ * higher-variance (wicket-or-nothing) while batters offer steadier
+ * floor value.
+ */
 export const ROLE_CONSTRAINTS = {
   minWicketkeepers: 1,
-  maxWicketkeepers: 4,
-  minBatsmen: 3,
+  maxWicketkeepers: 2,
+  minBatsmen: 4,
   maxBatsmen: 6,
   minBowlers: 3,
-  maxBowlers: 6,
+  maxBowlers: 4,
   minAllRounders: 1,
   maxAllRounders: 4,
   teamSize: 11,

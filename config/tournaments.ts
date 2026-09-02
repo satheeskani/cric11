@@ -18,4 +18,5 @@ export const ALLOWED_TOURNAMENTS: string[] = [
   "Caribbean Premier League",
   "The Hundred",
   "India tour of Zimbabwe",
+  "European T20 Premier League",
 ];
